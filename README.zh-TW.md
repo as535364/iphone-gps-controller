@@ -1,5 +1,3 @@
-[English](README.md) | [繁體中文](README.zh-TW.md)
-
 # 📍 iPhone GPS Controller
 
 透過 Mac（USB 連線）即時模擬 / 修改 iPhone GPS 位置的工具。  
@@ -48,7 +46,8 @@
 |------|------|
 | **作業系統** | macOS（需 `sudo` 建立 USB tunnel） |
 | **Python** | 3.8 以上 |
-| **iPhone iOS** | iOS 16 以上（iOS 17+ 需 RSD tunnel） |
+| **iPhone iOS** | iOS 16 以上 |
+| **開發者模式** | iPhone 上**必須開啟**（設定 → 隱私與安全性 → 開發者模式） |
 | **連線方式** | USB（Lightning 或 USB-C） |
 | **瀏覽器** | Chrome / Firefox / Safari（需支援 Clipboard API） |
 | **網路** | 後端僅需本機；搜尋 / 時區功能需可連外網 |
@@ -76,7 +75,26 @@ pip install aiohttp pymobiledevice3
 2. iPhone 出現「是否信任此電腦？」→ 點選 **信任**
 3. 確認 Mac 上的 `usbmuxd` 服務已啟動（通常自動執行）
 
-### 3. 下載檔案
+### 3. 開啟 iPhone 開發者模式（必要）
+
+本工具透過 DVT（DeveloperTools）服務模擬 GPS，**開發者模式為必要條件**，未開啟將導致 USB Tunnel 無法建立，裝置持續顯示紅色失敗狀態。
+
+**方法 A — 命令列啟用（iPhone 需已解鎖並完成信任）：**
+
+```bash
+python3 -m pymobiledevice3 amfi enable-developer-mode
+```
+
+**方法 B — 手動操作：**
+
+1. iPhone 開啟 **設定 → 隱私與安全性 → 開發者模式**
+2. 點選開啟 → 確認重新啟動
+3. 重開機後，再次確認「開啟開發者模式」
+
+> ⚠️ 開啟開發者模式後，iPhone 需重新啟動才能生效。  
+> ⚠️ 請勿在不信任的網路環境下使用開發者模式。
+
+### 4. 下載檔案
 
 ```
 iphone-gps-controller/
@@ -393,7 +411,7 @@ gps_worker（每裝置一個常駐 coroutine）
 - 執行 `python3 -m pymobiledevice3 usbmux list` 確認裝置可被偵測
 
 **Q2：Tunnel 一直失敗（`❌ Tunnel failed after 3 attempts`）？**
-- iOS 17+ 需要允許「開發者模式」：設定 → 隱私與安全性 → 開發者模式 → 開啟
+- 確認 iPhone 已開啟開發者模式（設定 → 隱私與安全性 → 開發者模式），這是必要條件
 - 確認 Mac 已安裝最新版 Xcode Command Line Tools：`xcode-select --install`
 - 嘗試重新啟動 iPhone 再連線
 

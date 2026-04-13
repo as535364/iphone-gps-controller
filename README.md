@@ -1,8 +1,3 @@
-[English](README.md) | [繁體中文](README.zh-TW.md)
-
-# iPhone GPS Controller
-...
-
 # 📍 iPhone GPS Controller
 
 A tool for real-time iPhone GPS location simulation via USB from a Mac.  
@@ -51,7 +46,8 @@ A tool for real-time iPhone GPS location simulation via USB from a Mac.
 |------|-------------|
 | **OS** | macOS (requires `sudo` to create USB tunnel) |
 | **Python** | 3.8 or higher |
-| **iPhone iOS** | iOS 16 or higher (iOS 17+ requires RSD tunnel) |
+| **iPhone iOS** | iOS 16 or higher |
+| **Developer Mode** | **Must be enabled** on iPhone (Settings → Privacy & Security → Developer Mode) |
 | **Connection** | USB (Lightning or USB-C) |
 | **Browser** | Chrome / Firefox / Safari (Clipboard API support required) |
 | **Network** | Backend is local-only; Search / Timezone features require internet |
@@ -79,7 +75,27 @@ pip install aiohttp pymobiledevice3
 2. Tap **Trust** when iPhone prompts "Trust This Computer?"
 3. Ensure `usbmuxd` is running on Mac (usually starts automatically)
 
-### 3. File Structure
+### 3. Enable Developer Mode on iPhone (Required)
+
+This tool uses the DVT (DeveloperTools) service to simulate GPS.  
+**Developer Mode is mandatory** — without it, the USB tunnel cannot be established and all devices will remain in red (failed) status.
+
+**Method A — Command line (iPhone must be unlocked and trusted):**
+
+```bash
+python3 -m pymobiledevice3 amfi enable-developer-mode
+```
+
+**Method B — Manual:**
+
+1. On iPhone: **Settings → Privacy & Security → Developer Mode**
+2. Toggle on → tap **Restart** to confirm
+3. After reboot, confirm **Turn On Developer Mode** when prompted
+
+> ⚠️ Developer Mode takes effect only after the iPhone restarts.  
+> ⚠️ Avoid enabling Developer Mode on untrusted networks.
+
+### 4. Download Files
 
 ```
 iphone-gps-controller/
@@ -401,7 +417,7 @@ Returns the detailed status of a single device (same schema as one item in the `
 - Run `python3 -m pymobiledevice3 usbmux list` to verify detection
 
 **Q2: Tunnel keeps failing (`❌ Tunnel failed after 3 attempts`)?**
-- iOS 17+ requires **Developer Mode**: Settings → Privacy & Security → Developer Mode → Enable
+- Confirm Developer Mode is enabled on iPhone — this is a required prerequisite (Settings → Privacy & Security → Developer Mode)
 - Ensure Xcode Command Line Tools are up to date: `xcode-select --install`
 - Try restarting the iPhone before reconnecting
 
