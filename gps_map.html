@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<!--
+  gps_map.html
+  iPhone GPS Controller - Web Map Interface
+
+  Author  : Aroha Lin <https://github.com/ArohaLin>
+  Repo    : https://github.com/ArohaLin/iphone-gps-controller
+  License : MIT License
+  Copyright (c) 2026 Aroha Lin
+
+  Dependencies:
+    - Leaflet.js (BSD 2-Clause)
+    - OpenStreetMap (ODbL)
+    - Open-Meteo API (CC BY 4.0)
+-->
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iPhone GPS Controller</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root {
+  --bg:#18181b;--surf:#202024;--surf2:#28282d;--surf3:#323238;
+  --border:#3a3a42;--text:#e4e3e0;--muted:#888884;--faint:#444;
+  --primary:#4f98a3;--primary-dk:#3a7a84;--primary-hi:rgba(79,152,163,.15);
+  --success:#6daa45;--warn:#e8af34;--err:#d16374;
+  --side:300px;--radius:8px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;background:var(--bg);color:var(--text);overflow:hidden}
+#app{display:flex;height:100vh}
+
+/* Sidebar */
+#sidebar{width:var(--side);min-width:var(--side);height:100vh;background:var(--surf);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;z-index:1}
+.sb-header{padding:14px 16px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0}
+.sb-logo{width:32px;height:32px;background:var(--primary);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sb-logo svg{width:18px;height:18px;stroke:white;fill:none;stroke-width:2}
+.sb-title{font-size:14px;font-weight:600;letter-spacing:.3px}
+.sb-sub{font-size:11px;color:var(--muted);margin-top:1px}
+
+/* Device picker */
+#device-section{border-bottom:1px solid var(--border);flex-shrink:0}
+.device-header{padding:9px 16px;display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.5px;text-transform:uppercase}
+.device-scan-btn{padding:3px 8px;background:var(--surf2);border:1px solid var(--border);border-radius:5px;color:var(--muted);cursor:pointer;font-size:10px}
+.device-scan-btn:hover{color:var(--text);background:var(--surf3)}
+#device-list{display:flex;flex-direction:column;gap:0}
+.device-card{padding:9px 16px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .15s;display:flex;align-items:center;gap:10px}
+.device-card:last-child{border-bottom:none}
+.device-card:hover{background:var(--surf2)}
+.device-card.selected{background:var(--primary-hi);border-left:3px solid var(--primary)}
+.device-card.selected .dc-name{color:var(--primary)}
+.dc-dot{width:8px;height:8px;border-radius:50%;background:var(--faint);flex-shrink:0;transition:background .3s}
+.dc-dot.ok{background:var(--success)}
+.dc-dot.err{background:var(--err)}
+.dc-dot.connecting{background:var(--warn);animation:pulse 1s infinite}
+.dc-info{flex:1;min-width:0}
+.dc-name{font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dc-sub{font-size:10.5px;color:var(--muted);margin-top:1px}
+.dc-badge{font-size:10px;padding:2px 6px;border-radius:10px;background:var(--primary-hi);color:var(--primary);font-weight:600;flex-shrink:0}
+.no-devices{padding:16px;text-align:center;color:var(--faint);font-size:12px}
+
+/* Mode tabs */
+.mode-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
+.mode-tab{flex:1;padding:10px 0;text-align:center;font-size:12.5px;font-weight:500;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s}
+.mode-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+.mode-tab:hover:not(.active){color:var(--text)}
+
+/* Panels */
+.panel{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+.panel::-webkit-scrollbar{width:5px}
+.panel::-webkit-scrollbar-track{background:transparent}
+.panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.hidden{display:none!important}
+
+/* Coord display */
+.coord-display{background:var(--surf2);border-radius:var(--radius);padding:12px;border:1px solid var(--border)}
+.coord-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.coord-label{font-size:11px;color:var(--muted);letter-spacing:.5px;text-transform:uppercase}
+.coord-val{font-family:'SF Mono',Menlo,monospace;font-size:13px;color:var(--primary);font-weight:500}
+
+/* Status card */
+.status-card{background:var(--surf2);border-radius:var(--radius);padding:10px 12px;border:1px solid var(--border);font-size:11px;display:flex;flex-direction:column;gap:5px}
+.status-row{display:flex;justify-content:space-between;align-items:center}
+.status-key{color:var(--muted)}
+.status-val{font-family:'SF Mono',Menlo,monospace;color:var(--text)}
+.status-val.ok{color:var(--success)}
+.status-val.warn{color:var(--warn)}
+.status-val.err{color:var(--err)}
+
+/* Inputs */
+.field-label{font-size:11px;color:var(--muted);margin-bottom:5px;font-weight:500}
+.field-row{display:flex;gap:6px}
+input[type=number],input[type=text]{background:var(--surf2);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:13px;width:100%;outline:none;transition:border-color .2s;-moz-appearance:textfield}
+input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none}
+input:focus{border-color:var(--primary)}
+.go-btn{padding:7px 14px;background:var(--primary);border:none;border-radius:6px;color:white;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap}
+.go-btn:hover{background:var(--primary-dk)}
+
+/* D-Pad */
+.dpad-wrap{display:flex;flex-direction:column;gap:4px;align-items:center}
+.dpad-row{display:flex;gap:4px;justify-content:center}
+.dpad-btn{width:46px;height:36px;background:var(--surf2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s;user-select:none}
+.dpad-btn:hover{background:var(--surf3);border-color:var(--primary)}
+.dpad-btn:active{background:var(--primary);border-color:var(--primary);color:white;transform:scale(.93)}
+.dpad-center{background:var(--bg);cursor:default}
+.dpad-center:hover{background:var(--bg);border-color:var(--border)}
+.dpad-diag{opacity:.7}
+.dist-row{display:flex;align-items:center;gap:8px}
+.dist-row input{width:80px}
+.dist-unit{color:var(--muted);font-size:12px}
+
+/* Buttons */
+.btn{padding:8px 14px;border-radius:6px;font-size:13px;cursor:pointer;border:1px solid var(--border);display:inline-flex;align-items:center;gap:6px;transition:all .15s;font-weight:500;white-space:nowrap}
+.btn-primary{background:var(--primary);border-color:var(--primary);color:white}
+.btn-primary:hover{background:var(--primary-dk)}
+.btn-danger{background:transparent;border-color:var(--err);color:var(--err)}
+.btn-danger:hover{background:rgba(209,99,116,.1)}
+.btn-ghost{background:var(--surf2);color:var(--text)}
+.btn-ghost:hover{background:var(--surf3)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Waypoints */
+.wp-list{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg)}
+.wp-list::-webkit-scrollbar{width:4px}
+.wp-list::-webkit-scrollbar-thumb{background:var(--border)}
+.wp-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--border);transition:background .15s}
+.wp-item:last-child{border-bottom:none}
+.wp-item:hover{background:var(--surf2)}
+.wp-num{width:22px;height:22px;background:var(--warn);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#1a1a1a;flex-shrink:0}
+.wp-coords{flex:1;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--muted)}
+.wp-del{width:20px;height:20px;border:none;background:transparent;color:var(--faint);cursor:pointer;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .15s}
+.wp-del:hover{background:rgba(209,99,116,.15);color:var(--err)}
+.wp-empty{padding:20px;text-align:center;color:var(--faint);font-size:12px}
+
+/* Route info */
+.route-info{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.info-card{background:var(--surf2);border-radius:6px;padding:10px;border:1px solid var(--border)}
+.info-val{font-size:17px;font-weight:600;color:var(--text);margin-bottom:2px}
+.info-label{font-size:11px;color:var(--muted)}
+
+/* Speed slider */
+.speed-wrap{display:flex;flex-direction:column;gap:6px}
+.speed-row{display:flex;align-items:center;gap:10px}
+.speed-slider{flex:1;-webkit-appearance:none;height:4px;border-radius:2px;background:var(--surf3);outline:none;cursor:pointer}
+.speed-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--primary);cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+.speed-val{font-family:'SF Mono',Menlo,monospace;font-size:13px;color:var(--primary);min-width:64px;text-align:right}
+
+/* Progress bar */
+.progress-wrap{display:flex;flex-direction:column;gap:5px}
+.progress-bar{height:4px;background:var(--surf3);border-radius:2px;overflow:hidden}
+.progress-fill{height:100%;background:var(--primary);border-radius:2px;transition:width .5s;width:0}
+.progress-text{font-size:11px;color:var(--muted)}
+
+/* Tunnel panel */
+.tunnel-toggle{padding:9px 16px;display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--muted);font-size:12px;border-top:1px solid var(--border);flex-shrink:0;user-select:none}
+.tunnel-toggle:hover{color:var(--text);background:var(--surf2)}
+.tunnel-toggle .arrow{transition:transform .2s;font-size:10px}
+.tunnel-toggle.open .arrow{transform:rotate(90deg)}
+#tunnel-content{padding:12px 16px;border-top:1px solid var(--border);background:var(--bg);display:none;flex-shrink:0}
+.tunnel-cmd{background:var(--surf2);border-radius:6px;padding:8px 10px;font-family:'SF Mono',Menlo,monospace;font-size:11px;color:var(--primary);margin-bottom:10px;word-break:break-all;cursor:pointer}
+.tunnel-cmd:hover{background:var(--surf3)}
+.hint{background:rgba(79,152,163,.08);border:1px solid rgba(79,152,163,.2);border-radius:6px;padding:9px 12px;font-size:12px;color:var(--primary);display:flex;align-items:flex-start;gap:7px;line-height:1.5}
+.sec-hdr{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.6px;text-transform:uppercase}
+
+/* Map */
+#map-wrap{flex:1;position:relative}
+#map{width:100%;height:100%}
+#mode-badge{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:800;background:var(--surf);border:1px solid var(--border);border-radius:20px;padding:6px 16px;font-size:12px;font-weight:600;letter-spacing:.4px;color:var(--primary);pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.4)}
+#coord-hud{position:absolute;bottom:28px;left:50%;transform:translateX(-50%);z-index:800;background:rgba(20,20,24,.85);backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:20px;padding:7px 16px;font-family:'SF Mono',Menlo,monospace;font-size:12px;color:var(--text);pointer-events:none;white-space:nowrap;box-shadow:0 2px 12px rgba(0,0,0,.4)}
+#device-hud{position:absolute;top:14px;right:14px;z-index:800;background:rgba(20,20,24,.85);backdrop-filter:blur(8px);border:1px solid var(--border);border-radius:10px;padding:6px 12px;font-size:11px;color:var(--muted);pointer-events:none;white-space:nowrap}
+#device-hud .dh-name{color:var(--text);font-weight:600}
+#map-hint{position:absolute;top:54px;left:50%;transform:translateX(-50%);z-index:800;background:rgba(232,175,52,.15);border:1px solid rgba(232,175,52,.3);border-radius:20px;padding:5px 14px;font-size:11.5px;color:var(--warn);pointer-events:none;white-space:nowrap;transition:opacity .3s}
+#map-hint.hidden{opacity:0}
+#toast{position:absolute;bottom:70px;left:50%;transform:translateX(-50%);z-index:900;background:var(--surf);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:12.5px;color:var(--text);pointer-events:none;opacity:0;transition:opacity .3s;white-space:nowrap;box-shadow:0 4px 20px rgba(0,0,0,.5)}
+#toast.show{opacity:1}
+#toast.ok{border-color:var(--success);color:var(--success)}
+#toast.err{border-color:var(--err);color:var(--err)}
+
+/* Leaflet overrides */
+.leaflet-control-zoom{border:none!important;box-shadow:none!important}
+.leaflet-control-zoom a{background:var(--surf)!important;color:var(--text)!important;border:1px solid var(--border)!important;width:32px!important;height:32px!important;line-height:32px!important;font-size:18px!important}
+.leaflet-control-zoom a:hover{background:var(--surf2)!important}
+.leaflet-control-attribution{background:rgba(20,20,24,.7)!important;color:var(--faint)!important;font-size:10px!important}
+.leaflet-tile-pane{filter:brightness(.9) saturate(.9)}
+.phone-pulse{width:40px;height:40px;background:rgba(79,152,163,.15);border-radius:50%;border:2px solid rgba(79,152,163,.4);animation:ripple 2s infinite}
+@keyframes ripple{0%{transform:scale(.6);opacity:1}100%{transform:scale(1.4);opacity:0}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* 搜尋結果 */
+#search-results{max-height:220px;overflow-y:auto;margin-top:4px}
+#search-results::-webkit-scrollbar{width:4px}
+#search-results::-webkit-scrollbar-thumb{background:var(--border)}
+.sr-item{padding:8px 16px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .15s}
+.sr-item:last-child{border-bottom:none}
+.sr-item:hover{background:var(--surf2)}
+.sr-name{font-size:12.5px;font-weight:500;color:var(--text);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sr-addr{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sr-empty{padding:12px 16px;font-size:12px;color:var(--faint);text-align:center}
+.sr-loading{padding:12px 16px;font-size:12px;color:var(--muted);text-align:center}
+#search-btn{padding:7px 12px;flex-shrink:0}
+
+.sr-country{color:var(--text);font-size:11px;font-weight:500}
+.sr-time{color:var(--primary);font-size:11px;margin-left:8px;font-family:'SF Mono',Menlo,monospace}
+.sr-cd{background:rgba(232,175,52,.2);color:var(--warn);font-size:9px;padding:1px 5px;border-radius:8px;margin-left:4px;font-weight:700}
+
+/* 我的最愛 */
+.fav-empty{padding:24px 16px;text-align:center;color:var(--faint);font-size:12px;line-height:1.8}
+.fav-item{display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);transition:background .15s}
+.fav-item:last-child{border-bottom:none}
+.fav-item:hover{background:var(--surf2)}
+.fav-star{font-size:16px;flex-shrink:0;margin-top:1px}
+.fav-body{flex:1;min-width:0;cursor:pointer}
+.fav-name{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fav-coords{font-family:'SF Mono',Menlo,monospace;font-size:10.5px;color:var(--muted);margin-top:1px}
+.fav-meta{display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap}
+.fav-country{font-size:11px;color:var(--text);font-weight:500}
+.fav-time{font-size:11px;color:var(--primary);font-family:'SF Mono',Menlo,monospace}
+.fav-btns{display:flex;flex-direction:column;gap:3px;flex-shrink:0}
+.fav-btn{width:24px;height:24px;border:1px solid var(--border);background:var(--surf2);border-radius:5px;cursor:pointer;font-size:13px;display:flex;align-items:center;justify-content:center;transition:all .15s}
+.fav-btn:hover{background:var(--surf3);border-color:var(--primary)}
+.fav-del:hover{background:rgba(209,99,116,.15);border-color:var(--err)}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- SIDEBAR -->
+<aside id="sidebar">
+
+  <!-- Header -->
+  <div class="sb-header">
+    <div class="sb-logo">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+    </div>
+    <div>
+      <div class="sb-title">iPhone GPS Controller</div>
+      <div class="sb-sub" id="launcher-sub">連線 Launcher 中...</div>
+    </div>
+  </div>
+
+  <!-- Device picker -->
+  <div id="device-section">
+    <div class="device-header">
+      <span>裝置</span>
+      <button class="device-scan-btn" onclick="refreshDevices()">↻ 重新掃描</button>
+    </div>
+    <div id="device-list"><div class="no-devices">掃描中...</div></div>
+  </div>
+
+
+  <!-- 地點搜尋 -->
+  <div id="search-section" style="border-bottom:1px solid var(--border);flex-shrink:0">
+    <div style="padding:10px 16px 0">
+      <div class="field-row">
+        <input type="text" id="search-input" placeholder="搜尋地點、地址..." autocomplete="off"
+          onkeydown="if(event.key==='Enter') searchPlace()"
+          oninput="if(!this.value.trim()) clearSearchResults()">
+        <button class="go-btn" onclick="searchPlace()" id="search-btn">搜</button>
+      </div>
+    </div>
+    <div id="search-results"></div>
+  </div>
+
+  <!-- Mode tabs -->
+  <div class="mode-tabs">
+    <div class="mode-tab active" id="tab-normal" onclick="setMode('normal')">一般</div>
+    <div class="mode-tab" id="tab-cruise" onclick="setMode('cruise')">巡航</div>
+    <div class="mode-tab" id="tab-fav" onclick="setMode('fav')">⭐ 最愛</div>
+  </div>
+
+  <!-- ── NORMAL PANEL ── -->
+  <div class="panel" id="panel-normal">
+
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="sec-hdr">目前座標</div>
+        <div style="display:flex;gap:5px">
+          <button class="btn btn-ghost" style="padding:3px 8px;font-size:11px" onclick="addCurrentToFav()" title="加入我的最愛">⭐</button>
+          <button class="btn btn-ghost" style="padding:3px 8px;font-size:11px" onclick="copyCoords()">⎘ 複製</button>
+        </div>
+      </div>
+      <div class="coord-display">
+        <div class="coord-row"><span class="coord-label">Lat</span><span class="coord-val" id="disp-lat">—</span></div>
+        <div class="coord-row"><span class="coord-label">Lon</span><span class="coord-val" id="disp-lon">—</span></div>
+        <div class="coord-row"><span class="coord-label">當地時間</span><span class="coord-val" id="disp-time" style="font-size:12px">—</span></div>
+        <div class="coord-row" style="margin-bottom:0"><span class="coord-label">跨日</span><span id="disp-crossday" class="coord-val">—</span></div>
+      </div>
+    </div>
+
+    <!-- 裝置狀態 -->
+    <div>
+      <div class="sec-hdr" style="margin-bottom:8px">裝置狀態</div>
+      <div class="status-card">
+        <div class="status-row"><span class="status-key">GPS 連線</span><span class="status-val" id="sv-connected">—</span></div>
+        <div class="status-row"><span class="status-key">模擬中</span><span class="status-val" id="sv-simulating">—</span></div>
+        <div class="status-row"><span class="status-key">送出次數</span><span class="status-val" id="sv-count">—</span></div>
+        <div class="status-row"><span class="status-key">運行時間</span><span class="status-val" id="sv-uptime">—</span></div>
+      </div>
+    </div>
+
+    <!-- 手動座標 -->
+    <div>
+      <div class="sec-hdr" style="margin-bottom:8px">手動輸入座標</div>
+      <div class="field-row" style="margin-bottom:6px">
+        <input type="number" id="in-lat" placeholder="Lat" step="0.0001" value="25.0330">
+        <input type="number" id="in-lon" placeholder="Lon" step="0.0001" value="121.5654">
+      </div>
+      <button class="go-btn" style="width:100%" onclick="gotoInput()">設定座標 →</button>
+    </div>
+
+    <!-- D-Pad -->
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="sec-hdr">方向移動</div>
+        <div class="dist-row">
+          <input type="number" id="pan-dist" value="10" min="1" max="10000" style="width:70px;text-align:center">
+          <span class="dist-unit">m</span>
+        </div>
+      </div>
+      <div class="dpad-wrap">
+        <div class="dpad-row">
+          <button class="dpad-btn dpad-diag" onclick="pan('NW')">↖</button>
+          <button class="dpad-btn" onclick="pan('N')">↑</button>
+          <button class="dpad-btn dpad-diag" onclick="pan('NE')">↗</button>
+        </div>
+        <div class="dpad-row">
+          <button class="dpad-btn" onclick="pan('W')">←</button>
+          <button class="dpad-btn dpad-center"></button>
+          <button class="dpad-btn" onclick="pan('E')">→</button>
+        </div>
+        <div class="dpad-row">
+          <button class="dpad-btn dpad-diag" onclick="pan('SW')">↙</button>
+          <button class="dpad-btn" onclick="pan('S')">↓</button>
+          <button class="dpad-btn dpad-diag" onclick="pan('SE')">↘</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-danger" style="flex:1" onclick="clearLocation()">🔴 停止 GPS 模擬</button>
+    </div>
+    <div class="hint">ℹ 點擊地圖設定定位；方向鍵 / WASD 移動</div>
+  </div><!-- end panel-normal -->
+
+  <!-- ── CRUISE PANEL ── -->
+  <div class="panel hidden" id="panel-cruise">
+    <div class="hint" style="background:rgba(232,175,52,.08);border-color:rgba(232,175,52,.25);color:var(--warn)">
+      <span id="cruise-hint-text">點擊地圖依序加入航點，完成後按播放</span>
+    </div>
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="sec-hdr">航點 <span id="wp-count" style="color:var(--primary)">0</span></div>
+        <button class="btn btn-ghost" style="padding:3px 8px;font-size:11px" onclick="clearWaypoints()">清除全部</button>
+      </div>
+      <div class="wp-list" id="wp-list"><div class="wp-empty">尚無航點</div></div>
+    </div>
+    <div>
+      <div class="sec-hdr" style="margin-bottom:8px">移動速度</div>
+      <div class="field-row" style="align-items:center;gap:8px">
+        <input type="number" id="speed-input" value="5" min="0.1" max="999" step="0.5"
+          style="width:90px;text-align:center"
+          oninput="updateSpeed(this.value)"
+          onchange="updateSpeed(this.value)">
+        <span class="dist-unit">km/h</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto">每秒更新</span>
+      </div>
+    </div>
+    <div>
+      <div class="sec-hdr" style="margin-bottom:8px">路線資訊</div>
+      <div class="route-info">
+        <div class="info-card"><div class="info-val" id="ri-dist">—</div><div class="info-label">距離</div></div>
+        <div class="info-card"><div class="info-val" id="ri-eta">—</div><div class="info-label">預計時間</div></div>
+        <div class="info-card"><div class="info-val" id="ri-pts">0</div><div class="info-label">航點數</div></div>
+        <div class="info-card"><div class="info-val" id="ri-loop" style="cursor:pointer;color:var(--muted)" onclick="toggleLoop()">關閉</div><div class="info-label">循環</div></div>
+      </div>
+    </div>
+    <div id="progress-section" class="hidden">
+      <div class="progress-wrap">
+        <div style="display:flex;justify-content:space-between">
+          <span class="sec-hdr">播放進度</span>
+          <span id="play-status-text" style="font-size:11px;color:var(--primary)"></span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-text" id="progress-text">0 / 0</div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-play" onclick="playCruise()" style="flex:1">▶ 播放</button>
+      <button class="btn btn-ghost" id="btn-stop" onclick="stopCruise()" disabled>■ 停止</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-ghost" onclick="exportGPX()" style="flex:1">⬇ 匯出 GPX</button>
+      <button class="btn btn-ghost" onclick="undoWaypoint()" title="撤銷">↩</button>
+    </div>
+  </div><!-- end panel-cruise -->
+
+  <!-- ── FAVORITES PANEL ── -->
+  <div class="panel hidden" id="panel-fav">
+    <div class="btn-row">
+      <button class="btn btn-primary" style="flex:1" onclick="addCurrentToFav()">⭐ 加入目前位置</button>
+    </div>
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="sec-hdr">我的最愛 <span id="fav-count" style="color:var(--primary);font-weight:600">0</span></div>
+        <button class="device-scan-btn" onclick="clearAllFavs()">清除全部</button>
+      </div>
+      <div id="fav-list"><div class="fav-empty">尚無儲存地點<br>點擊 ⭐ 或從搜尋結果加入</div></div>
+    </div>
+    <div class="hint">ℹ 搜尋結果 Popup 可直接加入最愛</div>
+  </div><!-- end panel-fav -->
+
+  <!-- Launcher info -->
+  <div id="tunnel-toggle" class="tunnel-toggle" onclick="toggleTunnel()">
+    <span class="arrow">▶</span>
+    <span>啟動指令</span>
+  </div>
+  <div id="tunnel-content">
+    <div class="sec-hdr" style="margin-bottom:8px">一鍵啟動 Launcher</div>
+    <div class="tunnel-cmd" onclick="copyCmd(this)" title="點擊複製">sudo python3 gps_launcher.py</div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.6">
+      Launcher 自動偵測 iPhone、建立 tunnel、啟動 GPS。<br>
+      只需執行一次，之後插拔裝置自動處理。
+    </div>
+  </div>
+
+</aside>
+
+<!-- MAP -->
+<div id="map-wrap">
+  <div id="map"></div>
+  <div id="mode-badge">📍 一般模式</div>
+  <div id="device-hud"><span class="dh-name" id="hud-dev">未選擇裝置</span></div>
+  <div id="coord-hud">—</div>
+  <div id="map-hint" class="hidden">✚ 點擊地圖加入航點</div>
+  <div id="toast"></div>
+</div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ── Settings ──────────────────────────────────────────────────────
+const META  = 'http://localhost:8090';
+const POLL_MS = 1500;
+
+// ── State ─────────────────────────────────────────────────────────
+const state = {
+  mode: 'normal',
+  lat: 25.0330, lon: 121.5654,  // Taipei 101 (default value, not a real location)
+  deviceIdx: null,   // Currently selected device.idx
+  devices: [],
+  speed: 5, loop: false,
+  playing: false, cruiseTimer: null,
+};
+let map, phoneMarkers = {}, pulseMarkers = {}, routeLine;
+let wpMarkers = [], wpData = [];
+let toastTimer = null;
+
+// ── Init ───────────────────────────────────────────────────────────
+window.onload = () => {
+  initMap();
+  refreshDevices();
+  loadFavorites();
+  setInterval(pollDevices, POLL_MS);
+};
+
+function initMap() {
+  map = L.map('map', { center: [state.lat, state.lon], zoom: 15, zoomControl: false });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors', maxZoom: 19
+  }).addTo(map);
+  L.control.zoom({ position: 'topright' }).addTo(map);
+  map.on('click', onMapClick);
+  map.on('mousemove', e => {
+    document.getElementById('coord-hud').textContent =
+      `${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`;
+  });
+}
+
+function getOrCreateMarkers(idx) {
+  if (!phoneMarkers[idx]) {
+    const colors = ['#4f98a3','#e8af34','#6daa45','#d16374','#a374d1'];
+    const col = colors[idx % colors.length];
+    pulseMarkers[idx] = L.marker([state.lat, state.lon], {
+      icon: L.divIcon({ className:'', html:`<div style="width:40px;height:40px;background:${col}26;border-radius:50%;border:2px solid ${col}66;animation:ripple 2s infinite"></div>`, iconSize:[40,40], iconAnchor:[20,20] }),
+      interactive:false, zIndexOffset:900
+    }).addTo(map);
+    phoneMarkers[idx] = L.marker([state.lat, state.lon], {
+      icon: L.divIcon({ className:'', html:`<div style="width:16px;height:16px;background:${col};border:3px solid white;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.5)"></div>`, iconSize:[16,16], iconAnchor:[8,8] }),
+      zIndexOffset: 1000 + idx
+    }).addTo(map);
+    const dev = state.devices.find(d => d.idx === idx);
+    if (dev) phoneMarkers[idx].bindTooltip(dev.name, { permanent: false });
+  }
+  return { phone: phoneMarkers[idx], pulse: pulseMarkers[idx] };
+}
+
+// ── Map Click ──────────────────────────────────────────────────────
+function onMapClick(e) {
+  const { lat, lng } = e.latlng;
+  if (state.mode === 'normal') gotoCoord(lat, lng);
+  else if (state.mode === 'cruise' && !state.playing) addWaypoint(lat, lng);
+}
+
+// ── Mode Toggle ────────────────────────────────────────────────────
+function setMode(m) {
+  state.mode = m;
+  document.getElementById('panel-normal').classList.toggle('hidden', m !== 'normal');
+  document.getElementById('panel-cruise').classList.toggle('hidden', m !== 'cruise');
+  document.getElementById('panel-fav').classList.toggle('hidden', m !== 'fav');
+  document.getElementById('tab-normal').classList.toggle('active', m === 'normal');
+  document.getElementById('tab-cruise').classList.toggle('active', m === 'cruise');
+  document.getElementById('tab-fav').classList.toggle('active', m === 'fav');
+  const badges = { normal:'📍 一般模式', cruise:'🗺 巡航模式', fav:'⭐ 我的最愛' };
+  document.getElementById('mode-badge').textContent = badges[m] || '';
+  document.getElementById('map-hint').classList.toggle('hidden', m !== 'cruise');
+  if (m === 'fav') renderFavorites();
+}
+
+// ── Device List ────────────────────────────────────────────────────
+async function refreshDevices() {
+  try {
+    const devs = await fetch(`${META}/devices`).then(r => r.json());
+    state.devices = devs;
+    renderDeviceList(devs);
+    document.getElementById('launcher-sub').textContent =
+      `${devs.length} 台裝置 · Launcher 已連線`;
+
+    // Select first connected device by default
+    if (state.deviceIdx === null) {
+      const first = devs.find(d => d.connected) || devs[0];
+      if (first) selectDevice(first.idx, false);
+    }
+  } catch(e) {
+    document.getElementById('launcher-sub').textContent = 'Launcher 未啟動';
+    document.getElementById('device-list').innerHTML =
+      '<div class="no-devices">⚠ 請啟動 gps_launcher.py</div>';
+  }
+}
+
+function renderDeviceList(devs) {
+  const el = document.getElementById('device-list');
+  if (!devs.length) { el.innerHTML = '<div class="no-devices">無已連線裝置</div>'; return; }
+  el.innerHTML = devs.map(d => {
+    const dotCls = d.connected ? 'ok' : (d.tunnel_ok ? 'connecting' : 'err');
+    const sub = d.connected
+      ? (d.simulating ? `模擬中 · ${d.last_lat?.toFixed(4) ?? '—'}, ${d.last_lon?.toFixed(4) ?? '—'}` : `已連線 · iOS ${d.ios}`)
+      : (d.tunnel_ok ? 'GPS 連線中...' : '建立 Tunnel...');
+    const sel = state.deviceIdx === d.idx ? 'selected' : '';
+    return `<div class="device-card ${sel}" onclick="selectDevice(${d.idx})">
+      <div class="dc-dot ${dotCls}"></div>
+      <div class="dc-info">
+        <div class="dc-name">${d.name}</div>
+        <div class="dc-sub">${sub}</div>
+      </div>
+      ${state.deviceIdx === d.idx ? '<div class="dc-badge">使用中</div>' : ''}
+    </div>`;
+  }).join('');
+}
+
+function selectDevice(idx, showToastMsg = true) {
+  state.deviceIdx = idx;
+  const dev = state.devices.find(d => d.idx === idx);
+  if (dev) {
+    document.getElementById('hud-dev').textContent = dev.name;
+    if (showToastMsg) showToast(`切換至 ${dev.name}`, 'ok');
+    renderDeviceList(state.devices);
+    // Create map marker
+    getOrCreateMarkers(idx);
+    // Sync coordinates
+    if (dev.last_lat != null && dev.last_lon != null) {
+      gotoCoord(parseFloat(dev.last_lat), parseFloat(dev.last_lon), true);
+    }
+  }
+}
+
+// ── Status Polling ────────────────────────────────────────────────
+async function pollDevices() {
+  try {
+    const devs = await fetch(`${META}/devices`).then(r => r.json());
+    state.devices = devs;
+    renderDeviceList(devs);
+
+    const cur = devs.find(d => d.idx === state.deviceIdx);
+    if (!cur) {
+      const next = devs.find(d => d.connected) || devs[0];
+      if (next) {
+        selectDevice(next.idx, true);
+      } else {
+        state.deviceIdx = null;
+        document.getElementById('hud-dev').textContent = '未選擇裝置';
+      }
+      return;
+    }
+
+    // Update status card
+    document.getElementById('sv-connected').textContent  = cur.connected  ? '已連線' : '未連線';
+    document.getElementById('sv-connected').className    = `status-val ${cur.connected ? 'ok' : 'err'}`;
+    document.getElementById('sv-simulating').textContent = cur.simulating ? '是' : '否';
+    document.getElementById('sv-simulating').className   = `status-val ${cur.simulating ? 'ok' : 'warn'}`;
+    document.getElementById('sv-count').textContent      = cur.set_count ?? '—';
+    document.getElementById('sv-uptime').textContent     = cur.uptime_sec != null ? fmtTime(cur.uptime_sec) : '—';
+
+    // Sync coordinates (after reconnect)
+    if (cur.last_lat != null && cur.last_lon != null) {
+      const la = parseFloat(cur.last_lat), lo = parseFloat(cur.last_lon);
+      if (la !== state.lat || lo !== state.lon) gotoCoord(la, lo, true);
+    }
+
+    // Error toast
+    if (cur.error && cur.error !== window.lastErr) {
+      window.lastErr = cur.error;
+      showToast(cur.error, 'err');
+    } else if (cur.connected) window.lastErr = null;
+
+  } catch(e) { /* launcher 可能暫時不可用 */ }
+}
+
+// ── Set Coordinates ────────────────────────────────────────────────
+function gotoCoord(lat, lon, silent = false) {
+  state.lat = lat; state.lon = lon;
+
+  // Update map marker for selected device
+  if (state.deviceIdx !== null) {
+    const m = getOrCreateMarkers(state.deviceIdx);
+    m.phone.setLatLng([lat, lon]);
+    m.pulse.setLatLng([lat, lon]);
+  }
+  document.getElementById('disp-lat').textContent = lat.toFixed(6);
+  document.getElementById('disp-lon').textContent = lon.toFixed(6);
+  document.getElementById('in-lat').value = lat.toFixed(6);
+  document.getElementById('in-lon').value = lon.toFixed(6);
+  scheduleTzUpdate(lat, lon);
+
+  if (!silent) {
+    if (state.deviceIdx === null) { showToast('請先選擇裝置', 'err'); return; }
+    fetch(`${META}/device/${state.deviceIdx}/set`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lon })
+    }).then(r => r.json()).then(r => {
+      if (r.ok) showToast(`${lat.toFixed(5)}, ${lon.toFixed(5)}`, 'ok');
+      else showToast(r.error, 'err');
+    }).catch(() => showToast('無法連線 Launcher', 'err'));
+  }
+}
+
+function gotoInput() {
+  const lat = parseFloat(document.getElementById('in-lat').value);
+  const lon = parseFloat(document.getElementById('in-lon').value);
+  if (isNaN(lat) || isNaN(lon)) { showToast('座標格式錯誤', 'err'); return; }
+  gotoCoord(lat, lon);
+  map.setView([lat, lon]);
+}
+
+// ── Directional Move ───────────────────────────────────────────────
+function pan(dir) {
+  const m = parseFloat(document.getElementById('pan-dist').value) || 10;
+  const dlat = m / 111320;
+  const dlon = m / (111320 * Math.cos(state.lat * Math.PI / 180));
+  const dirs = {
+    N:[dlat,0],S:[-dlat,0],E:[0,dlon],W:[0,-dlon],
+    NE:[dlat*.707,dlon*.707],NW:[dlat*.707,-dlon*.707],
+    SE:[-dlat*.707,dlon*.707],SW:[-dlat*.707,-dlon*.707]
+  };
+  const [la, lo] = dirs[dir] || [0, 0];
+  gotoCoord(state.lat + la, state.lon + lo);
+}
+
+// ── Clear GPS ─────────────────────────────────────────────────────
+function clearLocation() {
+  if (state.deviceIdx === null) { showToast('請先選擇裝置', 'err'); return; }
+  fetch(`${META}/device/${state.deviceIdx}/clear`, { method: 'POST' })
+    .then(r => r.json()).then(r => {
+      if (r.ok) showToast('GPS 模擬已停止', 'ok');
+      else showToast(r.error, 'err');
+    }).catch(() => showToast('無法連線 Launcher', 'err'));
+}
+
+// ── Waypoints ──────────────────────────────────────────────────────
+function addWaypoint(lat, lon) {
+  const idx = wpData.length;
+  wpData.push({ lat, lon });
+  const marker = L.marker([lat, lon], {
+    icon: createWpIcon(idx + 1), draggable: true, zIndexOffset: 500
+  }).addTo(map);
+  marker.on('dragend', e => {
+    const p = e.target.getLatLng();
+    wpData[idx] = { lat: p.lat, lon: p.lng };
+    updateWpList(); updateRouteInfo();
+  });
+  marker.on('dblclick', () => removeWaypoint(idx));
+  marker.bindTooltip(`${idx + 1}`, { permanent: false });
+  wpMarkers.push(marker);
+  updateWpList(); updateRoute(); updateRouteInfo();
+}
+
+function removeWaypoint(i) {
+  map.removeLayer(wpMarkers[i]);
+  wpMarkers.splice(i, 1); wpData.splice(i, 1);
+  wpMarkers.forEach((m, j) => m.setIcon(createWpIcon(j + 1)));
+  updateWpList(); updateRoute(); updateRouteInfo();
+}
+function undoWaypoint() { if (wpData.length) removeWaypoint(wpData.length - 1); }
+function clearWaypoints() {
+  wpMarkers.forEach(m => map.removeLayer(m));
+  wpMarkers = []; wpData = [];
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  updateWpList(); updateRouteInfo();
+}
+function updateWpList() {
+  const el = document.getElementById('wp-list');
+  document.getElementById('wp-count').textContent = wpData.length;
+  document.getElementById('ri-pts').textContent   = wpData.length;
+  if (!wpData.length) { el.innerHTML = '<div class="wp-empty">尚無航點</div>'; return; }
+  el.innerHTML = wpData.map((wp, i) => `
+    <div class="wp-item">
+      <div class="wp-num">${i+1}</div>
+      <div class="wp-coords">${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)}</div>
+      <button class="wp-del" onclick="removeWaypoint(${i})">×</button>
+    </div>`).join('');
+}
+function createWpIcon(n) {
+  return L.divIcon({ className:'', html:`<div style="width:28px;height:28px;background:#e8af34;border:2px solid white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#1a1a1a;box-shadow:0 2px 8px rgba(0,0,0,.4)">${n}</div>`, iconSize:[28,28], iconAnchor:[14,14] });
+}
+function updateRoute() {
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (wpData.length > 1)
+    routeLine = L.polyline(wpData.map(w => [w.lat, w.lon]),
+      { color:'#e8af34', weight:2.5, opacity:.7, dashArray:'6,4' }).addTo(map);
+}
+
+// ── Speed / Loop ───────────────────────────────────────────────────
+function updateSpeed(v) {
+  const val = parseFloat(v);
+  if (isNaN(val) || val <= 0) return;
+  state.speed = val;
+  updateRouteInfo();
+}
+function toggleLoop() {
+  state.loop = !state.loop;
+  const el = document.getElementById('ri-loop');
+  el.textContent = state.loop ? '開啟' : '關閉';
+  el.style.color = state.loop ? 'var(--success)' : 'var(--muted)';
+}
+function updateRouteInfo() {
+  if (wpData.length < 2) { document.getElementById('ri-dist').textContent = '—'; document.getElementById('ri-eta').textContent = '—'; return; }
+  let dist = 0;
+  for (let i = 1; i < wpData.length; i++) dist += haversine(wpData[i-1].lat, wpData[i-1].lon, wpData[i].lat, wpData[i].lon);
+  const secs = dist / (state.speed * 1000 / 3600);
+  document.getElementById('ri-dist').textContent = dist > 1000 ? `${(dist/1000).toFixed(2)} km` : `${Math.round(dist)} m`;
+  document.getElementById('ri-eta').textContent  = fmtTime(secs);
+}
+function fmtTime(s) {
+  if (s < 60)   return `${Math.round(s)}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${Math.round(s%60)}s`;
+  return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+}
+function haversine(la1,lo1,la2,lo2) {
+  const R=6371000,p1=la1*Math.PI/180,p2=la2*Math.PI/180;
+  const a=Math.sin((la2-la1)*Math.PI/360)**2+Math.cos(p1)*Math.cos(p2)*Math.sin((lo2-lo1)*Math.PI/360)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+
+// ── Cruise (frontend only) ─────────────────────────────────────────
+async function playCruise() {
+  if (wpData.length < 2) { showToast('請至少加入 2 個航點', 'err'); return; }
+  if (state.deviceIdx === null) { showToast('請先選擇裝置', 'err'); return; }
+  state.playing = true;
+  document.getElementById('btn-play').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  document.getElementById('progress-section').classList.remove('hidden');
+  document.getElementById('cruise-hint-text').textContent = '巡航中...';
+
+  // Build per-second interpolated path from waypoints
+  function buildPath(pts, kmh) {
+    const mps = kmh * 1000 / 3600;
+    const path = [];
+    const segs = pts.length - 1;
+    for (let i = 0; i < segs; i++) {
+      const A = pts[i], B = pts[i + 1];
+      const dist = haversine(A.lat, A.lon, B.lat, B.lon);
+      const steps = Math.max(1, Math.round(dist / mps));
+      for (let s = 0; s < steps; s++) {
+        const t = s / steps;
+        path.push({
+          lat: A.lat + (B.lat - A.lat) * t,
+          lon: A.lon + (B.lon - A.lon) * t,
+          progress: (i + t) / segs,
+          label: `${i+1}→${i+2}`,
+        });
+      }
+    }
+    path.push({ lat: pts[segs].lat, lon: pts[segs].lon, progress: 1, label: `${segs+1}` });
+    return path;
+  }
+
+  let path = buildPath([...wpData], state.speed);
+  let si = 0;
+
+  const step = () => {
+    if (!state.playing) return;
+    if (si >= path.length) {
+      if (state.loop) {
+        path = buildPath([...wpData], state.speed); // Rebuild path in case speed changed
+        si = 0;
+      } else {
+        finishCruise(); return;
+      }
+    }
+    const pt = path[si];
+    gotoCoord(pt.lat, pt.lon);
+    document.getElementById('progress-fill').style.width = `${(pt.progress * 100).toFixed(0)}%`;
+    document.getElementById('progress-text').textContent = `步 ${si + 1} / ${path.length}`;
+    document.getElementById('play-status-text').textContent = pt.label;
+    si++;
+    state.cruiseTimer = setTimeout(step, 1000);
+  };
+  step();
+}
+function stopCruise() {
+  if (state.cruiseTimer) { clearTimeout(state.cruiseTimer); state.cruiseTimer = null; }
+  finishCruise();
+}
+function finishCruise() {
+  state.playing = false;
+  document.getElementById('btn-play').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  document.getElementById('progress-section').classList.add('hidden');
+  document.getElementById('cruise-hint-text').textContent = '點擊地圖依序加入航點，完成後按播放';
+  if (!state.loop) showToast('巡航完成', 'ok');
+}
+
+// ── GPX Export ─────────────────────────────────────────────────────
+function exportGPX() {
+  if (wpData.length < 2) { showToast('請至少加入 2 個航點', 'err'); return; }
+  const pts = wpData.map((p,i) => `  <trkpt lat="${p.lat}" lon="${p.lon}"><name>${i+1}</name></trkpt>`).join('\n');
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1">\n <trk><name>cruise</name><trkseg>\n${pts}\n </trkseg></trk>\n</gpx>`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([xml], { type:'application/gpx+xml' }));
+  a.download = 'cruise_route.gpx'; a.click();
+  showToast('GPX 已匯出', 'ok');
+}
+
+// ── UI Utilities ────────────────────────────────────────────────────
+function toggleTunnel() {
+  const c = document.getElementById('tunnel-content');
+  const t = document.getElementById('tunnel-toggle');
+  const open = c.style.display === 'block';
+  c.style.display = open ? 'none' : 'block';
+  t.classList.toggle('open', !open);
+}
+function copyCmd(el) {
+  navigator.clipboard.writeText(el.textContent.trim()).then(() => showToast('已複製', 'ok'));
+}
+function showToast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type || ''}`;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 2800);
+}
+
+
+// ── Timezone lookup with cache (Open-Meteo, no API key required) ────────────
+const _tzCache = {};
+let _tzTimer   = null;
+
+async function lookupTz(lat, lon) {
+  const key = `${lat.toFixed(1)},${lon.toFixed(1)}`;
+  if (_tzCache[key]) return _tzCache[key];
+
+  // Primary: Open-Meteo (free, no API key, CORS open)
+  try {
+    const res  = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m&timezone=auto`,
+      { signal: AbortSignal.timeout(7000) }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const tz   = data.timezone;
+    if (!tz || tz === 'GMT') throw new Error('no tz');
+    return _buildTzResult(key, tz);
+  } catch(e) {
+    console.warn('Open-Meteo tz fail:', e.message);
+  }
+
+  // Fallback: longitude estimate (±15° per hour, ~±30 min error)
+  const offsetH  = Math.round(lon / 15);
+  const now      = new Date();
+  const utcMs    = now.getTime() + now.getTimezoneOffset() * 60000;
+  const localD   = new Date(utcMs + offsetH * 3600000);
+  const twD      = new Date(utcMs + 8 * 3600000);
+  const localTime = `${String(localD.getUTCHours()).padStart(2,'0')}:${String(localD.getUTCMinutes()).padStart(2,'0')}`;
+  const crossDay  = localD.toDateString() !== twD.toDateString();
+  const result    = { tz: `UTC${offsetH >= 0 ? '+' : ''}${offsetH}(估算)`, localTime, crossDay };
+  _tzCache[key]   = result;
+  return result;
+}
+
+function _buildTzResult(key, tz) {
+  const now       = new Date();
+  const localTime = now.toLocaleTimeString('zh-TW', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+  const localDay  = now.toLocaleDateString('en-CA', { timeZone: tz });
+  const twDay     = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+  const crossDay  = localDay !== twDay;
+  const result    = { tz, localTime, crossDay };
+  _tzCache[key]   = result;
+  return result;
+}
+
+// Update current coord timezone info with debounce
+function scheduleTzUpdate(lat, lon) {
+  if (_tzTimer) clearTimeout(_tzTimer);
+  document.getElementById('disp-time').textContent     = '查詢中...';
+  document.getElementById('disp-crossday').textContent = '—';
+  _tzTimer = setTimeout(async () => {
+    const info = await lookupTz(lat, lon);
+    if (!info) {
+      document.getElementById('disp-time').textContent     = '—';
+      document.getElementById('disp-crossday').textContent = '—';
+      return;
+    }
+    document.getElementById('disp-time').textContent = info.localTime;
+    const cdEl = document.getElementById('disp-crossday');
+    if (info.crossDay) {
+      cdEl.textContent  = '是 ⚠';
+      cdEl.style.color  = 'var(--warn)';
+    } else {
+      cdEl.textContent  = '否';
+      cdEl.style.color  = 'var(--success)';
+    }
+  }, 800);
+}
+
+// Copy current coordinates to clipboard (format: lat,lon)
+function copyCoords() {
+  if (state.lat == null || state.lon == null) { showToast('尚無座標', 'err'); return; }
+  const text = `${state.lat.toFixed(6)},${state.lon.toFixed(6)}`;
+  navigator.clipboard.writeText(text)
+    .then(() => showToast(`已複製 ${text}`, 'ok'))
+    .catch(() => showToast('複製失敗', 'err'));
+}
+
+// ── Location search via Nominatim (OpenStreetMap) ──────────────────
+let _searchTimer = null;
+let _searchMarker = null;
+
+async function searchPlace() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const el = document.getElementById('search-results');
+  el.innerHTML = '<div class="sr-loading">搜尋中...</div>';
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=7&addressdetails=1&accept-language=zh-TW,zh,en`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'iPhoneGPSController/1.0' } });
+    const data = await res.json();
+    renderSearchResults(data);
+  } catch(e) {
+    el.innerHTML = '<div class="sr-empty">搜尋失敗，請確認網路連線</div>';
+  }
+}
+
+// Search result cache
+let _searchCache = [];
+
+function renderSearchResults(data) {
+  const el = document.getElementById('search-results');
+  if (!data.length) { el.innerHTML = '<div class="sr-empty">找不到符合的地點</div>'; return; }
+  _searchCache = data;
+
+  el.innerHTML = data.map((r, i) => {
+    const parts  = r.display_name.split(',').map(s => s.trim());
+    const name   = parts.slice(0, 2).join(', ');
+    const country = (r.address && r.address.country) ? r.address.country : (parts[parts.length - 1] || '');
+    return `<div class="sr-item" data-idx="${i}">
+      <div class="sr-name">${name}</div>
+      <div class="sr-addr">
+        <span class="sr-country">${country}</span>
+        <span class="sr-time" id="sr-time-${i}">⏳</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.onclick = e => {
+    const item = e.target.closest('.sr-item');
+    if (!item) return;
+    const r = _searchCache[parseInt(item.dataset.idx)];
+    if (r) jumpToPlace(r);
+  };
+
+  // Fetch timezone for each result in parallel
+  data.forEach((r, i) => {
+    lookupTz(parseFloat(r.lat), parseFloat(r.lon)).then(info => {
+      const el2 = document.getElementById(`sr-time-${i}`);
+      if (!el2) return;
+      if (!info) { el2.textContent = ''; return; }
+      const cdMark = info.crossDay ? ' <span class="sr-cd">跨日</span>' : '';
+      el2.innerHTML = `${info.localTime}${cdMark}`;
+    });
+  });
+}
+
+function jumpToPlace(r) {
+  const la = parseFloat(r.lat), lo = parseFloat(r.lon);
+  map.setView([la, lo], 16);
+
+  if (_searchMarker) map.removeLayer(_searchMarker);
+  _searchMarker = L.marker([la, lo], {
+    icon: L.divIcon({
+      className: '',
+      html: `<div style="width:20px;height:20px;background:#e8af34;border:3px solid white;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.5);animation:pulse 1.5s 3"></div>`,
+      iconSize:[20,20], iconAnchor:[10,10]
+    }),
+    zIndexOffset: 2000
+  }).addTo(map);
+
+  const title = r.display_name.split(',')[0].trim();
+  const coordStr = `${la.toFixed(5)}, ${lo.toFixed(5)}`;
+  const cruiseLink = state.mode === 'cruise'
+    ? ` &nbsp;<a href="#" id="sr-wp-link" style="color:#e8af34">✚ 加入航點</a>` : '';
+  const country = (r.address && r.address.country) ? r.address.country : '';
+
+  _searchMarker.bindPopup(
+    `<div style="font-size:12px;max-width:210px">
+      <b>${title}</b><br>
+      <span style="color:#888;font-size:10px">${coordStr}</span><br>
+      <a href="#" id="sr-set-link" style="color:#4f98a3">📍 設定為 GPS 位置</a>${cruiseLink}<br>
+      <a href="#" id="sr-fav-link" style="color:#e8af34">⭐ 加入我的最愛</a>
+    </div>`, { maxWidth: 230 }
+  ).openPopup();
+
+  map.once('popupopen', () => {
+    const setLink = document.getElementById('sr-set-link');
+    if (setLink) setLink.onclick = e => { e.preventDefault(); gotoCoord(la, lo); };
+    const wpLink = document.getElementById('sr-wp-link');
+    if (wpLink) wpLink.onclick = e => { e.preventDefault(); addWaypoint(la, lo); };
+    const favLink = document.getElementById('sr-fav-link');
+    if (favLink) favLink.onclick = e => { e.preventDefault(); addFavorite(la, lo, title, country); showToast('⭐ 已加入最愛', 'ok'); };
+  });
+
+  showToast(title, 'ok');
+  document.getElementById('search-results').innerHTML = '';
+  document.getElementById('search-input').value = title;
+}
+
+function clearSearchResults() {
+  document.getElementById('search-results').innerHTML = '';
+  if (_searchMarker) { map.removeLayer(_searchMarker); _searchMarker = null; }
+}
+
+
+// ── Favorites management (persisted in localStorage) ──────────────
+const FAV_KEY = 'gps_favorites_v1';
+let _favs = [];
+
+function loadFavorites() {
+  try { _favs = JSON.parse(localStorage.getItem(FAV_KEY) || '[]'); } catch(e) { _favs = []; }
+}
+function saveFavorites() {
+  localStorage.setItem(FAV_KEY, JSON.stringify(_favs));
+  document.getElementById('fav-count').textContent = _favs.length;
+}
+
+function addFavorite(lat, lon, name, country) {
+  // Prevent duplicate coordinates
+  if (_favs.some(f => Math.abs(f.lat - lat) < 0.00001 && Math.abs(f.lon - lon) < 0.00001)) {
+    showToast('此座標已在最愛中', 'err'); return;
+  }
+  const cleanName = (name || `${lat.toFixed(5)},${lon.toFixed(5)}`).trim();
+  _favs.push({ id: Date.now(), name: cleanName, lat, lon, country: country || '' });
+  saveFavorites();
+  if (state.mode === 'fav') renderFavorites();
+}
+
+function addCurrentToFav() {
+  if (state.lat == null) { showToast('尚無座標', 'err'); return; }
+  const name = prompt('請輸入地標名稱', `地標 ${_favs.length + 1}`);
+  if (name === null) return; // Cancel
+  addFavorite(state.lat, state.lon, name, '');
+  showToast(`⭐ "${name}" 已加入最愛`, 'ok');
+}
+
+function deleteFavorite(id) {
+  _favs = _favs.filter(f => f.id !== id);
+  saveFavorites();
+  renderFavorites();
+}
+
+function renameFavorite(id) {
+  const f = _favs.find(f => f.id === id);
+  if (!f) return;
+  const name = prompt('輸入新名稱', f.name);
+  if (!name || !name.trim()) return;
+  f.name = name.trim();
+  saveFavorites();
+  renderFavorites();
+}
+
+function clearAllFavs() {
+  if (!_favs.length) return;
+  if (!confirm(`確定清除全部 ${_favs.length} 個最愛地點？`)) return;
+  _favs = [];
+  saveFavorites();
+  renderFavorites();
+}
+
+function renderFavorites() {
+  const el = document.getElementById('fav-list');
+  document.getElementById('fav-count').textContent = _favs.length;
+  if (!_favs.length) {
+    el.innerHTML = '<div class="fav-empty">尚無儲存地點<br>點擊 ⭐ 或從搜尋結果加入</div>';
+    return;
+  }
+  el.innerHTML = _favs.map(f => `
+    <div class="fav-item" data-id="${f.id}">
+      <div class="fav-star">⭐</div>
+      <div class="fav-body">
+        <div class="fav-name">${f.name}</div>
+        <div class="fav-coords">${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}</div>
+        <div class="fav-meta">
+          ${f.country ? `<span class="fav-country">${f.country}</span>` : ''}
+          <span class="fav-time" id="ft-${f.id}">⏳</span>
+        </div>
+      </div>
+      <div class="fav-btns">
+        <button class="fav-btn fav-go"   data-action="go"     title="跳轉">🗺</button>
+        <button class="fav-btn fav-gps"  data-action="gps"    title="設定GPS">📍</button>
+        <button class="fav-btn fav-edit" data-action="rename" title="重新命名">✏</button>
+        <button class="fav-btn fav-del"  data-action="del"    title="刪除">🗑</button>
+      </div>
+    </div>`).join('');
+
+  // Event delegation for favorite item actions
+  el.onclick = e => {
+    const btn  = e.target.closest('[data-action]');
+    const item = e.target.closest('.fav-item');
+    if (!item) return;
+    const id  = parseInt(item.dataset.id);
+    const f   = _favs.find(f => f.id === id);
+    if (!f) return;
+    if (!btn) { map.setView([f.lat, f.lon], 16); return; } // Navigate to location by name click
+    const act = btn.dataset.action;
+    if (act === 'go')     map.setView([f.lat, f.lon], 16);
+    if (act === 'gps')    { gotoCoord(f.lat, f.lon); showToast(`📍 ${f.name}`, 'ok'); }
+    if (act === 'rename') renameFavorite(id);
+    if (act === 'del')    deleteFavorite(id);
+  };
+
+  // Async timezone lookup for each favorite
+  _favs.forEach(f => {
+    lookupTz(f.lat, f.lon).then(info => {
+      const el2 = document.getElementById(`ft-${f.id}`);
+      if (!el2 || !info) return;
+      const cd = info.crossDay ? ' <span class="sr-cd">跨日</span>' : '';
+      el2.innerHTML = `${info.localTime}${cd}`;
+    });
+  });
+}
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = { ArrowUp:'N',ArrowDown:'S',ArrowLeft:'W',ArrowRight:'E',
+    w:'N',s:'S',a:'W',d:'E',q:'NW',e:'NE',z:'SW',c:'SE' }[e.key];
+  if (k) pan(k);
+  if (e.key === '+' || e.key === '=') map.zoomIn();
+  if (e.key === '-') map.zoomOut();
+  if (e.key === 'f' && state.lat) map.setView([state.lat, state.lon]);
+});
+</script>
+</body>
+</html>
