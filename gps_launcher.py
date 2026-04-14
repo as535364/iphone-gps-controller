@@ -3,7 +3,7 @@
 gps_launcher.py
 
 Real-time iPhone GPS location simulator launcher.
-Manages USB device detection, tunnel lifecycle, and HTTP API.
+Manages tunneld daemon, device discovery (USB + Wi-Fi), and HTTP API.
 
 Author  : Aroha Lin <https://github.com/ArohaLin>
 Repo    : https://github.com/ArohaLin/iphone-gps-controller
@@ -11,16 +11,17 @@ License : MIT License
 Copyright (c) 2026 Aroha Lin
 """
 
-import asyncio, inspect, json, logging, re, signal, sys, time
+import asyncio, json, logging, signal, sys, time
+from urllib.request import urlopen
+from urllib.error import URLError
 from aiohttp import web
 from aiohttp.web_middlewares import middleware
 
 META_PORT        = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
 SCAN_SEC         = 6
-TUNNEL_TIMEOUT   = 40
-TUNNEL_RETRIES   = 3
-TUNNEL_RETRY_SEC = 5
-DEVICE_BOOT_WAIT = 8
+TUNNELD_HOST     = '127.0.0.1'
+TUNNELD_PORT     = 49151
+TUNNELD_BOOT_WAIT = 3
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -31,12 +32,6 @@ logging.basicConfig(
 log = logging.getLogger('launcher')
 logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
 logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
-
-# ── ANSI escape code stripper ─────────────────────────────────────────
-_ANSI = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-
-def strip_ansi(s: str) -> str:
-    return _ANSI.sub('', s)
 
 # ── Command types ─────────────────────────────────────────────────────
 class _SetCmd:
@@ -61,14 +56,13 @@ class _Mailbox:
 
 # ── Per-device context ────────────────────────────────────────────────
 class DeviceCtx:
-    def __init__(self, idx, udid, name, ios):
+    def __init__(self, idx, udid):
         self.idx         = idx
         self.udid        = udid
-        self.name        = name
-        self.ios         = ios
+        self.name        = f'iPhone ({udid[-4:]})'
+        self.ios         = '?'
         self.rsd_host    = None
         self.rsd_port    = None
-        self.tunnel_proc = None
         self._mailbox    = _Mailbox()
         self._start_t    = time.time()
         self.state = {
@@ -87,161 +81,71 @@ class DeviceCtx:
         }
 
 _devices: dict = {}
+_tunneld_proc = None
 
-# ── USB device scan (3 fallback methods) ─────────────────────────────
-async def scan_usb_devices():
+# ── tunneld daemon lifecycle ─────────────────────────────────────────
+async def start_tunneld():
+    """Spawn `sudo pymobiledevice3 remote tunneld` once. Idempotent: if a
+    tunneld is already listening on 49151 we reuse it."""
+    global _tunneld_proc
+    if _probe_tunneld():
+        log.info('Tunneld already running, reusing')
+        return
+    log.info('🚀 Starting tunneld daemon (may prompt for sudo password)...')
+    _tunneld_proc = await asyncio.create_subprocess_exec(
+        'sudo', sys.executable, '-m', 'pymobiledevice3', 'remote', 'tunneld',
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    # Wait for HTTP endpoint to come up
+    for _ in range(TUNNELD_BOOT_WAIT * 5):
+        await asyncio.sleep(0.2)
+        if _probe_tunneld():
+            log.info('✅ Tunneld ready')
+            return
+    log.warning('Tunneld did not respond within boot window; continuing anyway')
+
+def _probe_tunneld() -> bool:
     try:
-        from pymobiledevice3.usbmux import list_devices
-        raw = list_devices()
-        if inspect.isawaitable(raw):
-            raw = await raw
-        result = []
-        for d in raw:
-            udid = getattr(d, 'serial', None) or getattr(d, 'udid', None) or str(d)
-            name, ios = f'iPhone ({udid[-4:]})', '?'
-            try:
-                from pymobiledevice3.lockdown import create_using_usbmux
-                ld = create_using_usbmux(serial=udid)
-                if inspect.isawaitable(ld): ld = await ld
-                vals = ld.all_values
-                name = vals.get('DeviceName', name)
-                ios  = vals.get('ProductVersion', '?')
-            except Exception:
-                pass
-            result.append({'udid': udid, 'name': name, 'ios': ios})
-        if result: return result
-    except Exception as e:
-        log.debug(f'API scan: {e}')
+        with urlopen(f'http://{TUNNELD_HOST}:{TUNNELD_PORT}/hello', timeout=1) as r:
+            return r.status == 200
+    except (URLError, OSError):
+        return False
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, '-m', 'pymobiledevice3', 'usbmux', 'list',
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        text = strip_ansi(out.decode()).strip()
-        if text:
-            data = json.loads(text)
-            if isinstance(data, dict): data = [data]
-            result = []
-            for d in data:
-                udid = d.get('SerialNumber') or d.get('udid', '')
-                if udid:
-                    result.append({
-                        'udid': udid,
-                        'name': d.get('DeviceName', f'iPhone ({udid[-4:]})'),
-                        'ios':  d.get('ProductVersion', '?'),
-                    })
-            if result: return result
-    except Exception as e:
-        log.debug(f'CLI scan: {e}')
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, '-m', 'pymobiledevice3', 'usbmux', 'list',
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        udids = re.findall(r'[0-9a-f]{40}', out.decode(), re.I)
-        if udids:
-            return [{'udid': u, 'name': f'iPhone ({u[-4:]})', 'ios': '?'} for u in udids]
-    except Exception as e:
-        log.debug(f'Regex scan: {e}')
-
-    return []
-
-# ── Graceful tunnel termination ───────────────────────────────────────
-async def terminate_tunnel(ctx: DeviceCtx):
-    proc = ctx.tunnel_proc
+async def stop_tunneld():
+    proc = _tunneld_proc
     if proc is None or proc.returncode is not None:
-        ctx.tunnel_proc = None
         return
     try:
         proc.terminate()
         await asyncio.wait_for(proc.wait(), timeout=4.0)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except (ProcessLookupError, OSError):
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            pass
+        try: proc.kill()
+        except (ProcessLookupError, OSError): pass
+        try: await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError: pass
     except (ProcessLookupError, OSError):
         pass
-    except Exception:
-        pass
-    ctx.tunnel_proc = None
 
-# ── Single tunnel attempt ─────────────────────────────────────────────
-async def _try_start_tunnel(ctx: DeviceCtx) -> bool:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            'sudo', sys.executable, '-m', 'pymobiledevice3',
-            'remote', 'start-tunnel', '--udid', ctx.udid,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-    except Exception as e:
-        log.error(f'[{ctx.name}] Failed to start tunnel process: {e}')
-        return False
-
-    ctx.tunnel_proc = proc
-    rsd_host = rsd_port = None
-    deadline = asyncio.get_event_loop().time() + TUNNEL_TIMEOUT
-
-    while asyncio.get_event_loop().time() < deadline:
+# ── Scan devices via tunneld HTTP API ────────────────────────────────
+async def scan_tunneld_devices() -> dict:
+    """Return {udid: (tunnel_address, tunnel_port)}. Prefers non-USB (Wi-Fi)
+    interface when a device has multiple tunnels active."""
+    def _fetch():
         try:
-            raw = await asyncio.wait_for(proc.stdout.readline(), timeout=3.0)
-        except asyncio.TimeoutError:
-            if proc.returncode is not None:
-                log.warning(f'[{ctx.name}] Tunnel process exited early (rc={proc.returncode})')
-                break
+            with urlopen(f'http://{TUNNELD_HOST}:{TUNNELD_PORT}/', timeout=2) as r:
+                return json.loads(r.read().decode())
+        except (URLError, OSError, ValueError):
+            return {}
+    data = await asyncio.get_running_loop().run_in_executor(None, _fetch)
+    result = {}
+    for udid, tunnels in data.items():
+        if not tunnels:
             continue
-        if not raw:
-            break
-
-        line = strip_ansi(raw.decode(errors='replace')).strip()
-        log.debug(f'[tunnel/{ctx.name}] {line}')
-
-        m = re.search(r'RSD\s*Address\s*[:\s]\s*([0-9a-f][0-9a-f:]+)', line, re.I)
-        if m: rsd_host = m.group(1).strip().rstrip(':')
-        m = re.search(r'RSD\s*Port\s*[:\s]\s*(\d+)', line, re.I)
-        if m: rsd_port = int(m.group(1))
-
-        if rsd_host and rsd_port:
-            ctx.rsd_host = rsd_host
-            ctx.rsd_port = rsd_port
-            log.info(f'[{ctx.name}] ✅ Tunnel OK  {rsd_host}:{rsd_port}')
-            asyncio.create_task(_drain(proc.stdout))
-            return True
-
-    try:
-        proc.kill()
-    except (ProcessLookupError, OSError):
-        pass
-    ctx.tunnel_proc = None
-    return False
-
-async def start_tunnel_with_retry(ctx: DeviceCtx) -> bool:
-    for attempt in range(1, TUNNEL_RETRIES + 1):
-        suffix = '' if attempt == 1 else f' (attempt {attempt})'
-        log.info(f'[{ctx.name}] Starting tunnel...{suffix}')
-        ok = await _try_start_tunnel(ctx)
-        if ok: return True
-        if attempt < TUNNEL_RETRIES:
-            log.warning(f'[{ctx.name}] Tunnel failed, retrying in {TUNNEL_RETRY_SEC}s...')
-            await terminate_tunnel(ctx)
-            await asyncio.sleep(TUNNEL_RETRY_SEC)
-    log.error(f'[{ctx.name}] ❌ Tunnel failed after {TUNNEL_RETRIES} attempts')
-    return False
-
-async def _drain(stream):
-    try:
-        async for _ in stream: pass
-    except Exception:
-        pass
+        # Any tunnel works; first entry is fine
+        t = tunnels[0]
+        result[udid] = (t['tunnel-address'], t['tunnel-port'])
+    return result
 
 # ── GPS worker ────────────────────────────────────────────────────────
 async def gps_worker(ctx: DeviceCtx):
@@ -256,8 +160,16 @@ async def gps_worker(ctx: DeviceCtx):
             await asyncio.sleep(2)
             continue
         try:
-            log.info(f'[{ctx.name}] Connecting GPS...')
+            log.info(f'[{ctx.name}] Connecting GPS... ({ctx.rsd_host}:{ctx.rsd_port})')
             async with RemoteServiceDiscoveryService((ctx.rsd_host, ctx.rsd_port)) as rsd:
+                # Populate device info from peer handshake
+                try:
+                    props = rsd.peer_info.get('Properties', {})
+                    ctx.ios = props.get('OSVersion', ctx.ios)
+                    ctx.name = props.get('ProductType', ctx.name)
+                except Exception:
+                    pass
+
                 async with DvtProvider(rsd) as dvt:
                     async with LocationSimulation(dvt) as loc:
                         ctx.state['connected'] = True
@@ -294,33 +206,32 @@ async def gps_worker(ctx: DeviceCtx):
 async def device_scanner():
     idx_counter = 0
     while True:
-        found       = await scan_usb_devices()
-        found_udids = {d['udid'] for d in found}
+        found = await scan_tunneld_devices()
 
+        # Remove gone devices
         for udid in list(_devices.keys()):
-            if udid not in found_udids:
+            if udid not in found:
                 ctx = _devices.pop(udid)
+                ctx.rsd_host = None
+                ctx.rsd_port = None
                 log.info(f'Device removed: {ctx.name}')
-                asyncio.create_task(terminate_tunnel(ctx))
 
-        for info in found:
-            udid = info['udid']
+        # Add / refresh current devices
+        for udid, (host, port) in found.items():
             if udid not in _devices:
-                ctx = DeviceCtx(idx_counter, udid, info['name'], info['ios'])
+                ctx = DeviceCtx(idx_counter, udid)
                 idx_counter += 1
+                ctx.rsd_host, ctx.rsd_port = host, port
                 _devices[udid] = ctx
-                log.info(f'Device found: {ctx.name}  ({udid[-8:]})')
-                asyncio.create_task(setup_device(ctx))
+                log.info(f'Device found: {udid[-8:]}  tunnel={host}:{port}')
+                asyncio.create_task(gps_worker(ctx))
+            else:
+                ctx = _devices[udid]
+                if (ctx.rsd_host, ctx.rsd_port) != (host, port):
+                    ctx.rsd_host, ctx.rsd_port = host, port
+                    log.info(f'[{ctx.name}] Tunnel updated: {host}:{port}')
 
         await asyncio.sleep(SCAN_SEC)
-
-async def setup_device(ctx: DeviceCtx):
-    await asyncio.sleep(DEVICE_BOOT_WAIT)
-    ok = await start_tunnel_with_retry(ctx)
-    if ok:
-        asyncio.create_task(gps_worker(ctx))
-    else:
-        ctx.state['error'] = 'Tunnel failed'
 
 # ── HTTP API ──────────────────────────────────────────────────────────
 def _get_ctx(request):
@@ -375,6 +286,7 @@ async def cors_middleware(request, handler):
 
 # ── Entry point ───────────────────────────────────────────────────────
 async def main():
+    await start_tunneld()
     asyncio.create_task(device_scanner())
 
     app = web.Application(middlewares=[cors_middleware])
@@ -393,7 +305,7 @@ async def main():
     log.info(f'   GET  http://localhost:{META_PORT}/devices')
     log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/set')
     log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/clear')
-    log.info('Scanning USB devices...')
+    log.info('Scanning devices via tunneld...')
 
     await asyncio.Event().wait()
 
@@ -401,4 +313,10 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
+        log.info('Stopping...')
+    finally:
+        try:
+            asyncio.run(stop_tunneld())
+        except Exception:
+            pass
         log.info('Stopped')

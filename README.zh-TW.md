@@ -77,6 +77,8 @@ pip install aiohttp pymobiledevice3
 2. iPhone 出現「是否信任此電腦？」→ 點選 **信任**
 3. 確認 Mac 上的 `usbmuxd` 服務已啟動（通常自動執行）
 
+> 💡 **僅首次配對需要 USB**。完成「信任此電腦」後即可永久拔掉，之後只要 iPhone 與 Mac 在同一 Wi-Fi 網段，啟動工具就能自動發現裝置（untethered）。
+
 ### 3. 開啟 iPhone 開發者模式（必要）
 
 本工具透過 DVT（DeveloperTools）服務模擬 GPS，**開發者模式為必要條件**，未開啟將導致 USB Tunnel 無法建立，裝置持續顯示紅色失敗狀態。

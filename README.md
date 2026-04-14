@@ -77,6 +77,8 @@ pip install aiohttp pymobiledevice3
 2. Tap **Trust** when iPhone prompts "Trust This Computer?"
 3. Ensure `usbmuxd` is running on Mac (usually starts automatically)
 
+> 💡 **USB is only needed for the first-time pairing.** Once you have tapped "Trust This Computer", you can unplug the cable permanently. As long as the iPhone and the Mac stay on the same Wi-Fi network, the tool will auto-discover the device on every launch (untethered).
+
 ### 3. Enable Developer Mode on iPhone (Required)
 
 This tool uses the DVT (DeveloperTools) service to simulate GPS.  
