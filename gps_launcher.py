@@ -76,6 +76,7 @@ class DeviceCtx:
         self._mailbox    = _Mailbox()
         self._start_t    = time.time()
         self.target      = None
+        self._worker_task = None
         self.jitter_on    = JITTER_ENABLED_DEFAULT
         self.jitter_sigma = JITTER_SIGMA
         self._nE = 0.0
@@ -269,28 +270,37 @@ async def device_scanner():
     while True:
         found = await scan_tunneld_devices()
 
-        # Remove gone devices
-        for udid in list(_devices.keys()):
-            if udid not in found:
-                ctx = _devices.pop(udid)
+        # Mark gone devices offline; cancel their stuck workers
+        for udid, ctx in _devices.items():
+            if udid not in found and ctx.rsd_host is not None:
                 ctx.rsd_host = None
                 ctx.rsd_port = None
-                log.info(f'Device removed: {ctx.name}')
+                ctx.state['connected'] = False
+                log.info(f'[{ctx.name}] Device offline (idx={ctx.idx})')
+                if ctx._worker_task and not ctx._worker_task.done():
+                    ctx._worker_task.cancel()
 
-        # Add / refresh current devices
+        # Add new / update existing / revive offline devices
         for udid, (host, port) in found.items():
             if udid not in _devices:
                 ctx = DeviceCtx(idx_counter, udid)
                 idx_counter += 1
                 ctx.rsd_host, ctx.rsd_port = host, port
                 _devices[udid] = ctx
-                log.info(f'Device found: {udid[-8:]}  tunnel={host}:{port}')
-                asyncio.create_task(gps_worker(ctx))
+                log.info(f'Device found: {udid[-8:]}  idx={ctx.idx}  tunnel={host}:{port}')
+                ctx._worker_task = asyncio.create_task(gps_worker(ctx))
             else:
                 ctx = _devices[udid]
+                was_offline = ctx.rsd_host is None
                 if (ctx.rsd_host, ctx.rsd_port) != (host, port):
                     ctx.rsd_host, ctx.rsd_port = host, port
-                    log.info(f'[{ctx.name}] Tunnel updated: {host}:{port}')
+                    if not was_offline:
+                        log.info(f'[{ctx.name}] Tunnel updated: {host}:{port}')
+                if was_offline:
+                    log.info(f'[{ctx.name}] Back online  tunnel={host}:{port}')
+                    ctx._worker_task = asyncio.create_task(gps_worker(ctx))
+                elif ctx._worker_task is None or ctx._worker_task.done():
+                    ctx._worker_task = asyncio.create_task(gps_worker(ctx))
 
         await asyncio.sleep(SCAN_SEC)
 
