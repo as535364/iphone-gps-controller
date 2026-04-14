@@ -11,7 +11,7 @@ License : MIT License
 Copyright (c) 2026 Aroha Lin
 """
 
-import asyncio, json, logging, math, random, signal, sys, time
+import asyncio, json, logging, math, os, random, signal, sys, time
 from urllib.request import urlopen
 from urllib.error import URLError
 from aiohttp import web
@@ -107,17 +107,25 @@ _tunneld_proc = None
 
 # ── tunneld daemon lifecycle ─────────────────────────────────────────
 async def start_tunneld():
-    """Spawn `sudo pymobiledevice3 remote tunneld` once. Idempotent: if a
-    tunneld is already listening on 49151 we reuse it."""
+    """Spawn pymobiledevice3 tunneld once. Idempotent: if a tunneld is
+    already listening on 49151 we reuse it. Skips sudo wrapper when we're
+    already root (so we keep direct control over the child for clean
+    signal delivery)."""
     global _tunneld_proc
     if _probe_tunneld():
         log.info('Tunneld already running, reusing')
         return
-    log.info('🚀 Starting tunneld daemon (may prompt for sudo password)...')
+    if os.geteuid() == 0:
+        cmd = [sys.executable, '-m', 'pymobiledevice3', 'remote', 'tunneld']
+        log.info('🚀 Starting tunneld daemon...')
+    else:
+        cmd = ['sudo', sys.executable, '-m', 'pymobiledevice3', 'remote', 'tunneld']
+        log.info('🚀 Starting tunneld daemon (may prompt for sudo password)...')
     _tunneld_proc = await asyncio.create_subprocess_exec(
-        'sudo', sys.executable, '-m', 'pymobiledevice3', 'remote', 'tunneld',
+        *cmd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
     )
     # Wait for HTTP endpoint to come up
     for _ in range(TUNNELD_BOOT_WAIT * 5):
@@ -135,19 +143,37 @@ def _probe_tunneld() -> bool:
         return False
 
 async def stop_tunneld():
+    """Wait for tunneld (already asked to /shutdown) to exit, then SIGKILL
+    its whole process group if still alive."""
     proc = _tunneld_proc
     if proc is None or proc.returncode is not None:
         return
+
+    # If /shutdown worked, the process exits on its own within ~1s
     try:
-        proc.terminate()
-        await asyncio.wait_for(proc.wait(), timeout=4.0)
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+        return
     except asyncio.TimeoutError:
-        try: proc.kill()
-        except (ProcessLookupError, OSError): pass
-        try: await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except asyncio.TimeoutError: pass
+        pass
+
+    # Fallback: kill the whole process group (covers sudo + child)
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, OSError):
         pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+        return
+    except asyncio.TimeoutError:
+        pass
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=1.0)
+    except asyncio.TimeoutError:
+        log.warning('tunneld did not exit even after SIGKILL')
 
 # ── Scan devices via tunneld HTTP API ────────────────────────────────
 async def scan_tunneld_devices() -> dict:
@@ -380,11 +406,53 @@ async def cors_middleware(request, handler):
     return resp
 
 # ── Entry point ───────────────────────────────────────────────────────
-async def main():
-    await start_tunneld()
-    asyncio.create_task(device_scanner())
+async def _request_tunneld_shutdown():
+    """Ask tunneld to shut itself down via its REST endpoint."""
+    def _hit():
+        try:
+            with urlopen(f'http://{TUNNELD_HOST}:{TUNNELD_PORT}/shutdown',
+                         timeout=1) as r:
+                r.read()
+        except Exception:
+            pass
+    await asyncio.get_running_loop().run_in_executor(None, _hit)
 
+async def on_startup(app):
+    await start_tunneld()
+    app['scanner_task'] = asyncio.create_task(device_scanner())
+    log.info(f'🚀 GPS Launcher  port={META_PORT}')
+    log.info(f'   GET  http://localhost:{META_PORT}/devices')
+    log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/set')
+    log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/clear')
+    log.info('Scanning devices via tunneld...')
+
+async def on_cleanup(app):
+    log.info('Shutting down...')
+    tasks = []
+    scanner = app.get('scanner_task')
+    if scanner and not scanner.done():
+        scanner.cancel()
+        tasks.append(scanner)
+    for ctx in _devices.values():
+        t = ctx._worker_task
+        if t and not t.done():
+            t.cancel()
+            tasks.append(t)
+    if tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=3.0)
+        except asyncio.TimeoutError:
+            log.warning('Some tasks did not stop within 3s')
+    await _request_tunneld_shutdown()
+    await stop_tunneld()
+    log.info('Stopped')
+
+def main():
     app = web.Application(middlewares=[cors_middleware])
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+
     app.router.add_get ('/devices',             route_devices)
     app.router.add_post('/device/{idx}/set',    route_set)
     app.router.add_post('/device/{idx}/clear',  route_clear)
@@ -393,26 +461,8 @@ async def main():
     for path in ['/device/{idx}/set', '/device/{idx}/clear', '/device/{idx}/jitter']:
         app.router.add_route('OPTIONS', path, lambda r: web.Response())
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, '127.0.0.1', META_PORT).start()
-
-    log.info(f'🚀 GPS Launcher  port={META_PORT}')
-    log.info(f'   GET  http://localhost:{META_PORT}/devices')
-    log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/set')
-    log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/clear')
-    log.info('Scanning devices via tunneld...')
-
-    await asyncio.Event().wait()
+    web.run_app(app, host='127.0.0.1', port=META_PORT,
+                print=None, access_log=None)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        log.info('Stopping...')
-    finally:
-        try:
-            asyncio.run(stop_tunneld())
-        except Exception:
-            pass
-        log.info('Stopped')
+    main()
