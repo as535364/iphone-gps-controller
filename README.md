@@ -136,12 +136,13 @@ On successful startup, the terminal will show:
 
 ### Step 2: Open the Frontend Map
 
-Open `gps_map.html` directly in your browser:
+Visit in your browser:
 
-```bash
-open gps_map.html
-# or drag-and-drop onto any browser window
 ```
+http://localhost:8090/
+```
+
+> 💡 The launcher serves both the API and the frontend HTML; no separate HTTP server is needed.
 
 ### Step 3: Set a GPS Location
 
@@ -433,8 +434,8 @@ Returns the detailed status of a single device (same schema as one item in the `
 
 **Q4: Frontend shows "Launcher not running"?**
 - Confirm `gps_launcher.py` is running and shows `🚀 GPS Launcher port=8090`
-- Check that your browser isn't blocking `localhost:8090`
-- If you changed the port, update `const META = 'http://localhost:PORT';` in `gps_map.html`
+- Make sure you're visiting `http://localhost:8090/` (served by the launcher)
+- If you changed the port, launch as `python3 gps_launcher.py 9000` and visit `http://localhost:9000/`
 
 **Q5: GPS disappears after stopping cruise?**
 - By design: stopping a cruise **keeps the last position** — GPS is not cleared automatically

@@ -15,13 +15,14 @@ import asyncio, json, logging, math, os, random, signal, sys, time
 from urllib.request import urlopen
 from urllib.error import URLError
 from aiohttp import web
-from aiohttp.web_middlewares import middleware
 
 META_PORT        = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
 SCAN_SEC         = 6
 TUNNELD_HOST     = '127.0.0.1'
 TUNNELD_PORT     = 49151
 TUNNELD_BOOT_WAIT = 3
+HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'gps_map.html')
 
 # ── GPS jitter (Ornstein-Uhlenbeck process) ─────────────────────────
 # Models realistic iPhone GPS drift. Without jitter, the pushed track is
@@ -369,6 +370,9 @@ async def route_device_status(request):
         return web.json_response({'ok': False, 'error': 'device not found'}, status=404)
     return web.json_response(ctx.to_dict())
 
+async def route_index(request):
+    return web.FileResponse(HTML_PATH)
+
 async def route_jitter(request):
     ctx = _get_ctx(request)
     if not ctx:
@@ -393,18 +397,6 @@ async def route_jitter(request):
         'jitter_sigma': ctx.jitter_sigma,
     })
 
-@middleware
-async def cors_middleware(request, handler):
-    if request.method == 'OPTIONS':
-        return web.Response(headers={
-            'Access-Control-Allow-Origin':  '*',
-            'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        })
-    resp = await handler(request)
-    resp.headers['Access-Control-Allow-Origin'] = '*'
-    return resp
-
 # ── Entry point ───────────────────────────────────────────────────────
 async def _request_tunneld_shutdown():
     """Ask tunneld to shut itself down via its REST endpoint."""
@@ -421,6 +413,7 @@ async def on_startup(app):
     await start_tunneld()
     app['scanner_task'] = asyncio.create_task(device_scanner())
     log.info(f'🚀 GPS Launcher  port={META_PORT}')
+    log.info(f'   🌐 UI   http://localhost:{META_PORT}/')
     log.info(f'   GET  http://localhost:{META_PORT}/devices')
     log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/set')
     log.info(f'   POST http://localhost:{META_PORT}/device/{{idx}}/clear')
@@ -449,17 +442,16 @@ async def on_cleanup(app):
     log.info('Stopped')
 
 def main():
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application()
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
 
+    app.router.add_get ('/',                    route_index)
     app.router.add_get ('/devices',             route_devices)
     app.router.add_post('/device/{idx}/set',    route_set)
     app.router.add_post('/device/{idx}/clear',  route_clear)
     app.router.add_post('/device/{idx}/jitter', route_jitter)
     app.router.add_get ('/device/{idx}/status', route_device_status)
-    for path in ['/device/{idx}/set', '/device/{idx}/clear', '/device/{idx}/jitter']:
-        app.router.add_route('OPTIONS', path, lambda r: web.Response())
 
     web.run_app(app, host='127.0.0.1', port=META_PORT,
                 print=None, access_log=None)

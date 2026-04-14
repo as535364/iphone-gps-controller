@@ -135,12 +135,13 @@ python3 gps_launcher.py
 
 ### Step 2：開啟前端地圖
 
-用瀏覽器直接開啟 `gps_map.html`：
+瀏覽器訪問：
 
-```bash
-open gps_map.html
-# 或直接拖曳到瀏覽器視窗
 ```
+http://localhost:8090/
+```
+
+> 💡 Launcher 啟動時會同時提供 API 與前端網頁，無需另開 HTTP server。
 
 ### Step 3：設定 GPS 位置
 
@@ -427,8 +428,8 @@ gps_worker（每裝置一個常駐 coroutine）
 
 **Q4：前端地圖開啟後顯示「Launcher 未啟動」？**
 - 確認 `gps_launcher.py` 正在執行且顯示 `🚀 GPS Launcher port=8090`
-- 確認瀏覽器未封鎖 `localhost:8090`（Safari 可能需調整設定）
-- 若更改了 PORT，請在 `gps_map.html` 第一行 JS 修改 `const META = 'http://localhost:PORT';`
+- 確認訪問的是 `http://localhost:8090/`（由 launcher 自己提供）
+- 若更改了 PORT，啟動命令改為 `python3 gps_launcher.py 9000`，瀏覽器改訪 `http://localhost:9000/`
 
 **Q5：巡航停止後 GPS 位置消失？**
 - 設計如此：停止巡航後會**保持在最後停止位置**，不會自動清除 GPS
