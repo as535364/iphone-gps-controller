@@ -338,6 +338,21 @@ input:focus{border-color:var(--primary)}
       </div>
     </div>
 
+    <!-- GPS 抖動 -->
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <label class="sec-hdr" style="cursor:pointer;display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="jitter-on" onchange="toggleJitter()" style="margin:0">
+          🎲 GPS 抖動
+        </label>
+        <span id="jitter-sigma-label" style="font-size:12px;color:#666">σ = 2.0 m</span>
+      </div>
+      <input type="range" id="jitter-sigma" min="0.5" max="10" step="0.5" value="2"
+             oninput="onJitterSigmaInput()" onchange="commitJitterSigma()"
+             style="width:100%">
+      <div class="hint" style="margin-top:4px">OU process 模擬真實 GPS 漂移，靜止時也會微抖</div>
+    </div>
+
     <div class="btn-row">
       <button class="btn btn-danger" style="flex:1" onclick="clearLocation()">🔴 停止 GPS 模擬</button>
     </div>
@@ -603,10 +618,24 @@ async function pollDevices() {
     document.getElementById('sv-count').textContent      = cur.set_count ?? '—';
     document.getElementById('sv-uptime').textContent     = cur.uptime_sec != null ? fmtTime(cur.uptime_sec) : '—';
 
-    // Sync coordinates (after reconnect)
-    if (cur.last_lat != null && cur.last_lon != null) {
-      const la = parseFloat(cur.last_lat), lo = parseFloat(cur.last_lon);
+    // Sync coordinates from user intent (target), not jittered output
+    const syncLat = cur.target_lat ?? cur.last_lat;
+    const syncLon = cur.target_lon ?? cur.last_lon;
+    if (syncLat != null && syncLon != null) {
+      const la = parseFloat(syncLat), lo = parseFloat(syncLon);
       if (la !== state.lat || lo !== state.lon) gotoCoord(la, lo, true);
+    }
+
+    // Sync jitter UI (skip while user is dragging slider)
+    if (!window._jitterDragging) {
+      const cb = document.getElementById('jitter-on');
+      if (cb && cb.checked !== !!cur.jitter_on) cb.checked = !!cur.jitter_on;
+      const sl = document.getElementById('jitter-sigma');
+      if (sl && parseFloat(sl.value) !== cur.jitter_sigma) {
+        sl.value = cur.jitter_sigma;
+        document.getElementById('jitter-sigma-label').textContent =
+          `σ = ${cur.jitter_sigma.toFixed(1)} m`;
+      }
     }
 
     // Error toast
@@ -677,6 +706,31 @@ function clearLocation() {
       if (r.ok) showToast('GPS 模擬已停止', 'ok');
       else showToast(r.error, 'err');
     }).catch(() => showToast('無法連線 Launcher', 'err'));
+}
+
+// ── Jitter controls ───────────────────────────────────────────────
+function _postJitter(body) {
+  if (state.deviceIdx === null) return;
+  fetch(`${META}/device/${state.deviceIdx}/jitter`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).catch(() => showToast('無法連線 Launcher', 'err'));
+}
+function toggleJitter() {
+  const on = document.getElementById('jitter-on').checked;
+  _postJitter({ enabled: on });
+  showToast(on ? 'GPS 抖動已開啟' : 'GPS 抖動已關閉', 'ok');
+}
+function onJitterSigmaInput() {
+  window._jitterDragging = true;
+  const v = parseFloat(document.getElementById('jitter-sigma').value);
+  document.getElementById('jitter-sigma-label').textContent = `σ = ${v.toFixed(1)} m`;
+}
+function commitJitterSigma() {
+  const v = parseFloat(document.getElementById('jitter-sigma').value);
+  _postJitter({ sigma: v });
+  setTimeout(() => { window._jitterDragging = false; }, 500);
 }
 
 // ── Waypoints ──────────────────────────────────────────────────────

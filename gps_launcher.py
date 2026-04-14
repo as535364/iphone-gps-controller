@@ -11,7 +11,7 @@ License : MIT License
 Copyright (c) 2026 Aroha Lin
 """
 
-import asyncio, json, logging, signal, sys, time
+import asyncio, json, logging, math, random, signal, sys, time
 from urllib.request import urlopen
 from urllib.error import URLError
 from aiohttp import web
@@ -22,6 +22,16 @@ SCAN_SEC         = 6
 TUNNELD_HOST     = '127.0.0.1'
 TUNNELD_PORT     = 49151
 TUNNELD_BOOT_WAIT = 3
+
+# ── GPS jitter (Ornstein-Uhlenbeck process) ─────────────────────────
+# Models realistic iPhone GPS drift. Without jitter, the pushed track is
+# mathematically perfect and trivially distinguishable from real GPS.
+JITTER_ENABLED_DEFAULT = True
+JITTER_TAU             = 8.0    # seconds, correlation time
+JITTER_SIGMA           = 2.0    # meters, steady-state stddev
+JITTER_OUT_PROB        = 0.01   # per-tick multipath outlier probability
+JITTER_OUT_MULT        = 4.0
+JITTER_TICK_SEC        = 1.0    # 1 Hz, matches real iPhone sampling
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -65,6 +75,11 @@ class DeviceCtx:
         self.rsd_port    = None
         self._mailbox    = _Mailbox()
         self._start_t    = time.time()
+        self.target      = None
+        self.jitter_on    = JITTER_ENABLED_DEFAULT
+        self.jitter_sigma = JITTER_SIGMA
+        self._nE = 0.0
+        self._nN = 0.0
         self.state = {
             'connected': False, 'simulating': False,
             'last_lat': None, 'last_lon': None,
@@ -72,12 +87,18 @@ class DeviceCtx:
         }
 
     def to_dict(self):
+        tlat = tlon = None
+        if self.target is not None:
+            tlat, tlon = self.target
         return {
             'idx': self.idx, 'udid': self.udid,
             'name': self.name, 'ios': self.ios,
             **self.state,
             'uptime_sec': int(time.time() - self._start_t),
             'tunnel_ok':  self.rsd_host is not None,
+            'jitter_on': self.jitter_on,
+            'jitter_sigma': self.jitter_sigma,
+            'target_lat': tlat, 'target_lon': tlon,
         }
 
 _devices: dict = {}
@@ -147,13 +168,47 @@ async def scan_tunneld_devices() -> dict:
         result[udid] = (t['tunnel-address'], t['tunnel-port'])
     return result
 
+# ── GPS jitter helpers ────────────────────────────────────────────────
+def _ou_step(nE: float, nN: float, sigma: float, dt: float, tau: float):
+    """Advance Ornstein-Uhlenbeck noise one step. Exact discrete update."""
+    decay = math.exp(-dt / tau)
+    kick  = math.sqrt(1.0 - decay*decay) * sigma
+    nE = nE*decay + kick*random.gauss(0.0, 1.0)
+    nN = nN*decay + kick*random.gauss(0.0, 1.0)
+    if random.random() < JITTER_OUT_PROB:
+        nE += sigma * JITTER_OUT_MULT * random.gauss(0.0, 1.0)
+        nN += sigma * JITTER_OUT_MULT * random.gauss(0.0, 1.0)
+    return nE, nN
+
+def _offset_latlon(lat: float, lon: float, dE: float, dN: float):
+    """Apply east/north meter offset to WGS84 lat/lon."""
+    R = 6378137.0
+    return (lat + (dN / R) * (180.0/math.pi),
+            lon + (dE / (R*math.cos(lat*math.pi/180.0))) * (180.0/math.pi))
+
+async def _tick_once(loc, ctx: DeviceCtx):
+    """Advance jitter (if enabled) and push the (possibly jittered) target."""
+    if ctx.target is None:
+        return
+    tlat, tlon = ctx.target
+    if ctx.jitter_on:
+        ctx._nE, ctx._nN = _ou_step(ctx._nE, ctx._nN, ctx.jitter_sigma,
+                                    JITTER_TICK_SEC, JITTER_TAU)
+        lat, lon = _offset_latlon(tlat, tlon, ctx._nE, ctx._nN)
+    else:
+        lat, lon = tlat, tlon
+    await loc.set(lat, lon)
+    ctx.state['simulating'] = True
+    ctx.state['last_lat']   = lat
+    ctx.state['last_lon']   = lon
+    ctx.state['set_count'] += 1
+    log.debug(f'[{ctx.name}] 📍 {lat:.6f},{lon:.6f}')
+
 # ── GPS worker ────────────────────────────────────────────────────────
 async def gps_worker(ctx: DeviceCtx):
     from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
     from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
     from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
-
-    last_target = None
 
     while True:
         if not ctx.rsd_host:
@@ -176,25 +231,31 @@ async def gps_worker(ctx: DeviceCtx):
                         ctx.state['error']     = None
                         log.info(f'[{ctx.name}] ✅ GPS connected')
 
-                        if last_target:
-                            await loc.set(last_target.lat, last_target.lon)
+                        if ctx.target is not None:
+                            await _tick_once(loc, ctx)
                             log.info(f'[{ctx.name}] ↩ Restored last position')
 
                         while True:
-                            cmd = await ctx._mailbox.wait()
+                            try:
+                                cmd = await asyncio.wait_for(
+                                    ctx._mailbox.wait(), timeout=JITTER_TICK_SEC)
+                            except asyncio.TimeoutError:
+                                # Periodic jitter tick (skip if jitter is off;
+                                # static target doesn't need re-pushing)
+                                if ctx.jitter_on:
+                                    await _tick_once(loc, ctx)
+                                continue
+
                             if isinstance(cmd, _ClearCmd):
                                 await loc.clear()
-                                last_target = None
+                                ctx.target = None
+                                ctx._nE = ctx._nN = 0.0
                                 ctx.state.update(simulating=False, last_lat=None, last_lon=None)
                                 log.info(f'[{ctx.name}] 🔴 GPS cleared')
                             elif isinstance(cmd, _SetCmd):
-                                await loc.set(cmd.lat, cmd.lon)
-                                last_target = cmd
-                                ctx.state['simulating'] = True
-                                ctx.state['last_lat']   = cmd.lat
-                                ctx.state['last_lon']   = cmd.lon
-                                ctx.state['set_count'] += 1
-                                log.debug(f'[{ctx.name}] 📍 {cmd.lat:.5f},{cmd.lon:.5f}')
+                                ctx.target = (cmd.lat, cmd.lon)
+                                # Push immediately (with jitter if enabled)
+                                await _tick_once(loc, ctx)
         except Exception as e:
             ctx.state['connected']  = False
             ctx.state['simulating'] = False
@@ -272,6 +333,30 @@ async def route_device_status(request):
         return web.json_response({'ok': False, 'error': 'device not found'}, status=404)
     return web.json_response(ctx.to_dict())
 
+async def route_jitter(request):
+    ctx = _get_ctx(request)
+    if not ctx:
+        return web.json_response({'ok': False, 'error': 'device not found'}, status=404)
+    try:
+        data = await request.json()
+    except Exception as e:
+        return web.json_response({'ok': False, 'error': str(e)}, status=400)
+    if 'enabled' in data:
+        ctx.jitter_on = bool(data['enabled'])
+        if not ctx.jitter_on:
+            ctx._nE = ctx._nN = 0.0
+    if 'sigma' in data:
+        try:
+            s = float(data['sigma'])
+        except (TypeError, ValueError):
+            return web.json_response({'ok': False, 'error': 'invalid sigma'}, status=400)
+        ctx.jitter_sigma = max(0.0, min(20.0, s))
+    return web.json_response({
+        'ok': True,
+        'jitter_on': ctx.jitter_on,
+        'jitter_sigma': ctx.jitter_sigma,
+    })
+
 @middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -293,8 +378,9 @@ async def main():
     app.router.add_get ('/devices',             route_devices)
     app.router.add_post('/device/{idx}/set',    route_set)
     app.router.add_post('/device/{idx}/clear',  route_clear)
+    app.router.add_post('/device/{idx}/jitter', route_jitter)
     app.router.add_get ('/device/{idx}/status', route_device_status)
-    for path in ['/device/{idx}/set', '/device/{idx}/clear']:
+    for path in ['/device/{idx}/set', '/device/{idx}/clear', '/device/{idx}/jitter']:
         app.router.add_route('OPTIONS', path, lambda r: web.Response())
 
     runner = web.AppRunner(app)

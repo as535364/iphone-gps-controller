@@ -39,6 +39,7 @@ A tool for real-time iPhone GPS location simulation via USB from a Mac.
 | 🕐 Local Time | Display local time at target coordinates (Open-Meteo API) |
 | 📱 Multi-Device | Manage multiple iPhones simultaneously with seamless switching |
 | 🔄 Auto-Reconnect | Automatically retries on tunnel or GPS disconnect |
+| 🎲 GPS Jitter | Server-side OU process simulates realistic GPS drift, adjustable strength (on by default) |
 
 ---
 
