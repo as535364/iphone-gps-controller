@@ -407,8 +407,11 @@ input:focus{border-color:var(--primary)}
     </div>
     <div class="btn-row">
       <button class="btn btn-ghost" onclick="exportGPX()" style="flex:1">⬇ 匯出 GPX</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('gpx-file').click()" style="flex:1">⬆ 匯入 GPX</button>
       <button class="btn btn-ghost" onclick="undoWaypoint()" title="撤銷">↩</button>
     </div>
+    <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml"
+           style="display:none" onchange="importGPX(event)">
   </div><!-- end panel-cruise -->
 
   <!-- ── FAVORITES PANEL ── -->
@@ -896,6 +899,36 @@ function exportGPX() {
   a.href = URL.createObjectURL(new Blob([xml], { type:'application/gpx+xml' }));
   a.download = 'cruise_route.gpx'; a.click();
   showToast('GPX 已匯出', 'ok');
+}
+
+function importGPX(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const doc = new DOMParser().parseFromString(e.target.result, 'application/xml');
+      if (doc.querySelector('parsererror')) throw new Error('XML parse error');
+      const nodes = doc.querySelectorAll('trkpt, rtept, wpt');
+      const pts = [];
+      nodes.forEach(n => {
+        const lat = parseFloat(n.getAttribute('lat'));
+        const lon = parseFloat(n.getAttribute('lon'));
+        if (!isNaN(lat) && !isNaN(lon)) pts.push([lat, lon]);
+      });
+      if (!pts.length) { showToast('找不到任何航點', 'err'); return; }
+      clearWaypoints();
+      pts.forEach(([la, lo]) => addWaypoint(la, lo));
+      map.fitBounds(pts);
+      showToast(`已匯入 ${pts.length} 個航點`, 'ok');
+    } catch (err) {
+      showToast('GPX 檔案解析失敗', 'err');
+    } finally {
+      event.target.value = '';
+    }
+  };
+  reader.onerror = () => showToast('讀檔失敗', 'err');
+  reader.readAsText(file);
 }
 
 // ── UI Utilities ────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ A tool for real-time iPhone GPS location simulation via USB from a Mac.
 | 🧭 Directional Move | 8-direction pad with configurable step distance (meters) |
 | 🗺 Cruise Mode | Multi-waypoint route planning with auto per-second advancement and loop support |
 | 📤 GPX Export | Export waypoint routes as standard `.gpx` files |
+| 📥 GPX Import | Load waypoints from a `.gpx` file (supports trkpt / rtept / wpt) |
 | 🔍 Place Search | Search global locations via Nominatim (OpenStreetMap) |
 | ⭐ Favorites | Save frequently-used locations in browser localStorage |
 | 🕐 Local Time | Display local time at target coordinates (Open-Meteo API) |
